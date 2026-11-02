@@ -17,26 +17,17 @@ Its open-bottom U-shaped well follows the measured v2.03 mode-0 geometry.
 Touch taps fire weak shots; desktop players can right-click or press `S` for a
 strong shot.
 
-## Spotify soundtrack
+## Soundtrack
 
-A compact 80-pixel Spotify player is centered directly below the game. The first three original
-soundtrack songs play in album order and repeat automatically, starting with a random
-one of the three on each new run. A loss interrupts them with **Game Over 1**. There is
-no song selector or full-album mode. Score changes, game pauses, replay exhaustion,
-and level completion do not trigger the loss cue.
+Put audio files (`.mp3` or `.m4a` work on every browser, including iPhone Safari) in
+`apps/web/static/music/`. The build lists them in `music.json`; the page plays a random
+track once gameplay starts, picks another random one (never the same twice in a row)
+when it ends, pauses with the game, and starts a fresh random track on each new run.
+Browsers need a tap before audio can start, so music begins on the first shot.
 
-Gameplay starts immediately and requests Spotify playback automatically. Browsers
-may block sound until the first gameplay click or keypress. Selecting the loss cue
-always requests playback even if the previous song has stopped. If the browser
-blocks a playback request, subsequent gameplay interactions can retry; Spotify's play
-button remains available. Manual pauses persist until the next run or loss cue.
-All audio stays in Spotify's official embed; full-track availability depends on
-Spotify and the browser. Restricted previews do not automatically cycle or loop.
-The isolated iFrame API falls back to a plain Spotify embed if unavailable.
-
-See [music research](../../reference/music-rules.md) for the original game's
-rules and track mappings. This site's automatic three-song rotation is an
-intentional convenience; the original game uses a manually selected song.
+After the first load the page downloads the files into CacheStorage in the background and
+the service worker serves them (with byte-range support, which Safari requires), so music
+works offline. Without any files the game is simply silent.
 
 ## Build the static exact app
 

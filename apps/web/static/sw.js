@@ -1,6 +1,6 @@
 "use strict";
 
-// Offline shell cache. The v86 runtime blobs (wasm, kernel, guest files) are
+// Offline shell cache (music is cached by the page, see music.mjs, and served here). The v86 runtime blobs (wasm, kernel, guest files) are
 // cached by exact-worker.js in its own versioned cache, so they are skipped
 // here to avoid storing them twice; only libv86.js (loaded via importScripts)
 // is handled by this worker.
@@ -35,9 +35,43 @@ self.addEventListener("activate", (event) => {
   })());
 });
 
+// Safari requests audio with Range headers and rejects a plain 200 from a
+// service worker, so answer ranges ourselves from the cached full file.
+async function rangeResponse(request, cached) {
+  const match = /^bytes=(\d*)-(\d*)$/.exec(request.headers.get("range") || "");
+  if (!match) return cached;
+  const buffer = await cached.arrayBuffer();
+  const total = buffer.byteLength;
+  let start = match[1] === "" ? Math.max(0, total - Number(match[2])) : Number(match[1]);
+  let end = match[1] === "" || match[2] === "" ? total - 1 : Math.min(Number(match[2]), total - 1);
+  if (start >= total || start > end) {
+    return new Response(null, {status: 416, headers: {"Content-Range": `bytes */${total}`}});
+  }
+  return new Response(buffer.slice(start, end + 1), {
+    status: 206,
+    headers: {
+      "Content-Type": cached.headers.get("Content-Type") || "audio/mpeg",
+      "Content-Length": String(end - start + 1),
+      "Content-Range": `bytes ${start}-${end}/${total}`,
+      "Accept-Ranges": "bytes",
+    },
+  });
+}
+
+async function musicResponse(request) {
+  const cached = await caches.match(request.url, {ignoreSearch: true});
+  if (cached) return request.headers.has("range") ? rangeResponse(request, cached) : cached;
+  return fetch(request);
+}
+
 self.addEventListener("fetch", (event) => {
   const request = event.request;
-  if (request.method !== "GET" || !shouldHandle(new URL(request.url))) return;
+  const url = new URL(request.url);
+  if (request.method !== "GET" || !shouldHandle(url)) return;
+  if (url.pathname.includes("/music/")) {
+    event.respondWith(musicResponse(request));
+    return;
+  }
   event.respondWith((async () => {
     try {
       const fresh = await fetch(request);

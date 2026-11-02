@@ -1,59 +1,112 @@
-export const GAME_TRACKS = [
-  "spotify:track:69Syxg5Ujwse0b2Cbn7zw4",
-  "spotify:track:6eoGq11wAa2DXTs5Qenszg",
-  "spotify:track:69ocfwfs4udHqebi4e2ouO",
-];
-export const GAME_OVER_TRACK = "spotify:track:4DDJ7CfXUhSDf2Gpp06szh";
-export const DEFAULT_GAME_TRACK = GAME_TRACKS[0];
+// Native soundtrack: plays a random track from ./music.json (generated at build
+// time from static/music/), picks another random one when a track ends, and
+// downloads the files into CacheStorage in the background for offline play.
+export const MUSIC_CACHE_PREFIX = "irisu-music-";
 
-// The web soundtrack cycles the three gameplay songs; only a loss interrupts it.
-export function soundtrackFor(snapshot, gameTrack = DEFAULT_GAME_TRACK) {
-  const lost = snapshot?.observation?.terminated && snapshot.terminal_reason === "game_over";
-  return {uri: lost ? GAME_OVER_TRACK : gameTrack, cycle: !lost};
+export function pickNext(tracks, previous, random = Math.random) {
+  if (!tracks.length) return null;
+  const choices = tracks.length > 1 ? tracks.filter(track => track !== previous) : tracks;
+  return choices[Math.min(choices.length - 1, Math.floor(random() * choices.length))];
 }
 
-export function createSoundtrack(document, window, random = Math.random) {
-  const frame = document.querySelector("#spotifyPlayer");
-  const status = document.querySelector("#musicStatus");
-  const chooseTrack = () => GAME_TRACKS[Math.floor(random() * GAME_TRACKS.length)];
-  let gameTrack = chooseTrack();
+async function defaultLoadTracks(window) {
+  const response = await window.fetch("./music.json", {cache: "no-cache"});
+  if (!response.ok) return {version: "none", tracks: []};
+  const data = await response.json();
+  return {version: String(data.version || "none"), tracks: Array.isArray(data.tracks) ? data.tracks : []};
+}
+
+// Best-effort background download so tracks keep working offline. The service
+// worker serves them from CacheStorage (cache-first) once they are stored.
+export async function cacheTracks(window, version, tracks) {
+  if (!window.caches || !/^https?:$/.test(window.location.protocol)) return;
+  const name = MUSIC_CACHE_PREFIX + version;
+  const cache = await window.caches.open(name);
+  for (const stale of await window.caches.keys()) {
+    if (stale.startsWith(MUSIC_CACHE_PREFIX) && stale !== name) await window.caches.delete(stale);
+  }
+  for (const track of tracks) {
+    try {
+      if (await cache.match(track)) continue;
+      const response = await window.fetch(track);
+      if (response.ok && response.status === 200) await cache.put(track, response);
+    } catch (_) {
+      return; // offline or storage full; try again next launch
+    }
+  }
+}
+
+export function createSoundtrack(document, window, {
+  random = Math.random,
+  createAudio = () => new window.Audio(),
+  loadTracks = () => defaultLoadTracks(window),
+  cache = cacheTracks,
+} = {}) {
+  const audio = createAudio();
+  audio.preload = "auto";
+  let tracks = [];
   let snapshot = null;
-  let current = null;
+  let currentTrack = null;
   let startRequested = false;
-  let runStarted = false;
+  let wantPlay = false;
+  let consecutiveErrors = 0;
+
+  function load(track) {
+    currentTrack = track;
+    audio.src = track;
+  }
+
+  function play() {
+    const result = audio.play();
+    if (result && typeof result.catch === "function") result.catch(() => {});
+  }
+
+  function apply() {
+    if (!tracks.length) return;
+    if (!wantPlay) {
+      if (!audio.paused) audio.pause();
+      return;
+    }
+    if (!startRequested) return; // browsers need a gesture before audio can start
+    if (!currentTrack) load(pickNext(tracks, null, random));
+    if (audio.paused) play();
+  }
+
+  function playNext() {
+    if (!tracks.length) return;
+    load(pickNext(tracks, currentTrack, random));
+    if (wantPlay && startRequested) play();
+  }
+
+  audio.addEventListener("ended", () => { consecutiveErrors = 0; playNext(); });
+  audio.addEventListener("playing", () => { consecutiveErrors = 0; });
+  audio.addEventListener("error", () => {
+    // Skip an unreadable file, but stop once every track has failed in a row.
+    if (++consecutiveErrors <= tracks.length) playNext();
+  });
 
   function start() {
     startRequested = true;
-    frame.contentWindow?.postMessage({type: "irisu:music-start"}, window.location.origin);
+    apply();
   }
 
-  function update(next = snapshot, force = false) {
-    const newRun = next && (!snapshot || next.seed !== snapshot.seed || next.mode !== snapshot.mode);
-    if (newRun) {
-      if (snapshot) gameTrack = chooseTrack();
-      runStarted = false;
-    }
-    const gameStarting = Boolean(next?.running && !runStarted);
-    if (gameStarting) runStarted = true;
+  function update(next = snapshot) {
+    const newRun = Boolean(next && snapshot &&
+      (next.seed !== snapshot.seed || next.mode !== snapshot.mode));
     snapshot = next;
-    const track = soundtrackFor(snapshot, gameTrack);
-    if (!force && !gameStarting && current?.uri === track.uri && current.cycle === track.cycle) return;
-    current = track;
-    const autoplay = Boolean(snapshot && (snapshot.running || !track.cycle));
-    frame.contentWindow?.postMessage({type: "irisu:music", ...track, autoplay}, window.location.origin);
+    wantPlay = Boolean(next?.running && !next.observation?.terminated);
+    if (newRun && tracks.length) {
+      audio.pause();
+      load(pickNext(tracks, currentTrack, random));
+    }
+    apply();
   }
 
-  window.addEventListener("message", (event) => {
-    if (event.origin !== window.location.origin || event.source !== frame.contentWindow) return;
-    if (event.data?.type === "irisu:music-ready") {
-      update(snapshot, true);
-      if (startRequested) frame.contentWindow?.postMessage({type: "irisu:music-start"}, window.location.origin);
-    }
-    if (event.data?.type === "irisu:music-status" && typeof event.data.message === "string") {
-      status.textContent = event.data.message;
-      status.hidden = !event.data.message;
-    }
-  });
-  update();
-  return {update, start};
+  const ready = Promise.resolve().then(loadTracks).then(({version, tracks: list}) => {
+    tracks = list;
+    apply();
+    return cache(window, version, list);
+  }).catch(() => {});
+
+  return {update, start, ready, audio};
 }

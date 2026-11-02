@@ -1,112 +1,92 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {createSoundtrack, DEFAULT_GAME_TRACK, GAME_OVER_TRACK, GAME_TRACKS, soundtrackFor} from "../static/music.mjs";
+import {createSoundtrack, pickNext} from "../static/music.mjs";
 
-const loss = {observation: {terminated: true}, terminal_reason: "game_over"};
+const tracks = ["./music/a.mp3", "./music/b.mp3", "./music/c.mp3"];
+const running = (seed = 1, extra = {}) => ({seed, mode: "play", running: true, observation: {terminated: false}, ...extra});
 
-test("gameplay starts with the first song; only a loss interrupts the automatic rotation", () => {
-  assert.equal(DEFAULT_GAME_TRACK, GAME_TRACKS[0]);
-  for (const terminal_reason of [null, "replay_exhausted", "time_limit", "level_completed"]) {
-    assert.deepEqual(soundtrackFor({observation: {score: 100000, terminated: true}, terminal_reason}),
-      {uri: DEFAULT_GAME_TRACK, cycle: true});
-  }
-  assert.deepEqual(soundtrackFor(loss), {uri: GAME_OVER_TRACK, cycle: false});
-  assert.deepEqual(soundtrackFor({observation: {score: 0}}), {uri: DEFAULT_GAME_TRACK, cycle: true});
-});
-
-function setup(random = () => 0) {
-  const sent = [], events = {};
-  const frame = {contentWindow: {postMessage: (...args) => sent.push(args)}};
-  const status = {hidden: true};
-  const window = {
-    location: {origin: "https://irisu.online"},
-    addEventListener: (name, callback) => { events[name] = callback; },
+function fakeAudio() {
+  const listeners = {};
+  return {
+    src: "", paused: true, plays: 0, pauses: 0,
+    addEventListener(name, callback) { listeners[name] = callback; },
+    emit(name) { listeners[name]?.(); },
+    play() { this.paused = false; this.plays++; return Promise.resolve(); },
+    pause() { this.paused = true; this.pauses++; },
   };
-  const music = createSoundtrack({querySelector: id => id === "#spotifyPlayer" ? frame : status}, window, random);
-  const message = data => events.message({origin: window.location.origin, source: frame.contentWindow, data});
-  return {sent, events, frame, status, window, music, message};
 }
 
-test("snapshots don't reset the ongoing playlist; terminal changes and handshake resync do", () => {
-  const {music, sent, message} = setup();
-  music.update({observation: {score: 10}});
-  music.update({observation: {score: 20000}});
-  assert.equal(sent.length, 1);
-  music.update(loss);
-  music.update(loss);
-  assert.equal(sent.length, 2);
-  assert.equal(sent[1][0].uri, GAME_OVER_TRACK);
-  message({type: "irisu:music-ready"});
-  assert.equal(sent[2][0].uri, GAME_OVER_TRACK);
-  music.update({observation: {score: 0}});
-  assert.equal(sent[3][0].uri, DEFAULT_GAME_TRACK);
-});
-
-test("gameplay interactions can retry playback, including before the bridge loads", () => {
-  const {music, sent, message} = setup();
-  music.start();
-  music.start();
-  assert.equal(sent.filter(([data]) => data.type === "irisu:music-start").length, 2);
-  message({type: "irisu:music-ready"});
-  assert.equal(sent.at(-1)[0].type, "irisu:music-start");
-});
-
-test("game startup requests autoplay without interaction, once per run", () => {
-  const {music, sent, message} = setup();
-  assert.equal(sent[0][0].autoplay, false);
-  const running = {seed: 1, mode: "live", running: true, observation: {tick: 0}};
-  music.update(running);
-  assert.equal(sent.at(-1)[0].autoplay, true);
-  const count = sent.length;
-  music.update({...running, observation: {tick: 10}});
-  music.update({...running, running: false});
-  music.update(running);
-  assert.equal(sent.length, count); // Do not override a manual music pause every frame/resume.
-  music.update({...running, seed: 2});
-  assert.equal(sent.length, count + 1);
-  assert.equal(sent.at(-1)[0].autoplay, true);
-  message({type: "irisu:music-ready"});
-  assert.equal(sent.at(-1)[0].autoplay, true); // Late player initialization gets the start request.
-});
-
-test("loss always selects the ending with autoplay even though the game has stopped", () => {
-  const {music, sent} = setup();
-  music.update({...loss, running: false});
-  assert.deepEqual(sent.at(-1)[0], {
-    type: "irisu:music", uri: GAME_OVER_TRACK, cycle: false, autoplay: true,
+async function setup(random = () => 0, list = tracks) {
+  const audio = fakeAudio();
+  const music = createSoundtrack({}, {location: {protocol: "capacitor:"}}, {
+    random, createAudio: () => audio, loadTracks: async () => ({version: "v", tracks: list}), cache: async () => {},
   });
+  await music.ready;
+  return {audio, music};
+}
+
+test("pickNext never repeats the previous track when there is a choice", () => {
+  for (let i = 0; i < 20; i++) assert.notEqual(pickNext(tracks, "./music/b.mp3", () => i / 20), "./music/b.mp3");
+  assert.equal(pickNext(["only.mp3"], "only.mp3"), "only.mp3");
+  assert.equal(pickNext([], null), null);
+  assert.equal(pickNext(tracks, null, () => 0.999999), "./music/c.mp3");
 });
 
-test("only the trusted player can report errors; normal status occupies no space", () => {
-  const {events, frame, status, message} = setup();
-  const data = {type: "irisu:music-status", message: "Spotify unavailable"};
-  events.message({origin: "https://other.example", source: frame.contentWindow, data});
-  events.message({origin: "https://irisu.online", source: {}, data});
-  assert.equal(status.hidden, true);
-  message(data);
-  assert.equal(status.textContent, data.message);
-  assert.equal(status.hidden, false);
-  message({type: "irisu:music-status", message: ""});
-  assert.equal(status.hidden, true);
+test("music waits for a user gesture, then plays a random track", async () => {
+  const {audio, music} = await setup(() => 0.5);
+  music.update(running());
+  assert.equal(audio.plays, 0);
+  music.start();
+  assert.equal(audio.src, "./music/b.mp3");
+  assert.equal(audio.plays, 1);
 });
 
+test("when a track ends another random track starts, never the same one", async () => {
+  const {audio, music} = await setup(() => 0);
+  music.update(running());
+  music.start();
+  const first = audio.src;
+  audio.paused = true;
+  audio.emit("ended");
+  assert.notEqual(audio.src, first);
+  assert.equal(audio.plays, 2);
+});
 
-test("each run chooses among the first three songs without rerolling on snapshots or handshake", () => {
-  for (const [index, sample] of [0, 0.5, 0.999999].entries()) {
-    let choices = 0;
-    const {music, sent, message} = setup(() => { choices++; return sample; });
-    assert.equal(sent[0][0].uri, GAME_TRACKS[index]);
-    const running = {seed: 1, mode: "live", running: true, observation: {tick: 0}};
-    music.update(running);
-    music.update({...running, observation: {tick: 100}});
-    message({type: "irisu:music-ready"});
-    assert.equal(choices, 1);
-    assert.equal(sent.at(-1)[0].uri, GAME_TRACKS[index]);
-    music.update({...running, ...loss, running: false});
-    assert.equal(sent.at(-1)[0].uri, GAME_OVER_TRACK);
-    music.update({...running, seed: 2});
-    assert.equal(choices, 2);
-    assert.equal(sent.at(-1)[0].uri, GAME_TRACKS[index]);
-    assert.equal(sent.at(-1)[0].autoplay, true);
-  }
+test("pausing or ending the game pauses the music, resuming continues the same track", async () => {
+  const {audio, music} = await setup(() => 0);
+  music.start();
+  music.update(running());
+  const track = audio.src;
+  music.update(running(1, {running: false}));
+  assert.equal(audio.paused, true);
+  music.update(running());
+  assert.equal(audio.src, track);
+  assert.equal(audio.paused, false);
+  music.update(running(1, {observation: {terminated: true}}));
+  assert.equal(audio.paused, true);
+});
+
+test("a new run picks a fresh random track", async () => {
+  const {audio, music} = await setup(() => 0);
+  music.start();
+  music.update(running(1));
+  const first = audio.src;
+  music.update(running(2));
+  assert.notEqual(audio.src, first);
+  assert.equal(audio.paused, false);
+});
+
+test("an unreadable track is skipped, and it stops after every track failed", async () => {
+  const {audio, music} = await setup(() => 0, ["./music/x.mp3", "./music/y.mp3"]);
+  music.start();
+  music.update(running());
+  for (let i = 0; i < 6; i++) audio.emit("error");
+  assert.ok(audio.plays <= 3);
+});
+
+test("no tracks means silence without errors", async () => {
+  const {audio, music} = await setup(() => 0, []);
+  music.start();
+  music.update(running());
+  assert.equal(audio.plays, 0);
 });
