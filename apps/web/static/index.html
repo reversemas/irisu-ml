@@ -4,6 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#070a0b">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="irisu">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="apple-touch-icon" href="./icon-180.png">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://www.googletagmanager.com; worker-src 'self' blob:; frame-src 'self' https://open.spotify.com; style-src 'self'; connect-src 'self' https://*.google-analytics.com https://*.analytics.google.com https://www.googletagmanager.com; img-src 'self' https://*.google-analytics.com https://www.googletagmanager.com">
   <title>irisu</title>
   <script async src="https://www.googletagmanager.com/gtag/js?id=G-DCS6EVRYKH"></script>
@@ -72,6 +78,15 @@
           <button id="exitReplayButton" type="button">new game</button>
         </div>
         <div id="replayError" class="replay-error" role="alert" hidden></div>
+      </section>
+
+      <section id="touchControls" class="touch-controls" aria-label="Touch controls">
+        <div class="touch-shot" role="group" aria-label="Shot type">
+          <button type="button" data-shot="weak" aria-pressed="true">weak</button>
+          <button type="button" data-shot="strong" aria-pressed="false">strong</button>
+          <button type="button" data-shot="both" aria-pressed="false">both</button>
+        </div>
+        <button type="button" id="fastForwardButton" class="touch-ff">hold: fast</button>
       </section>
 
     </div>

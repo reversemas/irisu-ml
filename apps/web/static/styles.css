@@ -128,3 +128,14 @@ kbd { margin-left: 4px; color: #858c8c; font-size: 7px; }
 @media (prefers-reduced-motion: reduce) {
   .runtime-spinner { animation-duration: 0.001ms; animation-iteration-count: 1; }
 }
+
+.touch-controls { display: none; gap: 8px; align-items: stretch; }
+.touch-shot { display: flex; flex: 1; gap: 4px; }
+.touch-controls button {
+  flex: 1; min-height: 44px; padding: 8px; border: 1px solid #303838; background: #101617aa;
+  color: #b4b8b5; font-size: 11px; text-transform: uppercase;
+  -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; touch-action: manipulation;
+}
+.touch-controls button[aria-pressed="true"] { border-color: var(--rose); color: var(--paper); background: #2a1a20; }
+.touch-controls .touch-ff { flex: 0 0 34%; touch-action: none; }
+@media (pointer: coarse) { .touch-controls { display: flex; } }

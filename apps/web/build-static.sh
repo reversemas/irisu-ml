@@ -37,6 +37,7 @@ cleanup() { rm -rf -- "$stage"; }
 trap cleanup EXIT
 cmake -E copy_directory "$static" "$stage"
 cmake -E copy_directory "$runtime" "$stage/exact-runtime"
+node "$root/apps/web/make-precache.mjs" "$stage"
 printf '%s\n' 'generated exact static site; safe to replace' > "$stage/$site_marker"
 if [[ -e "$output" ]]; then
   if [[ ! -f "$output/$site_marker" ]]; then

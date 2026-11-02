@@ -25,6 +25,8 @@ const ui = {
   replaySpeed: $("#replaySpeed"), replayPosition: $("#replayPosition"),
   exitReplay: $("#exitReplayButton"),
   runtimeLoading: $("#runtimeLoading"),
+  shotButtons: document.querySelectorAll("[data-shot]"),
+  fastForward: $("#fastForwardButton"),
   appError: $("#appError"),
   toast: $("#toast"),
 };
@@ -37,6 +39,7 @@ let started = false;
 let lastEvent = -1;
 let toastTimer;
 let fastForwardTimer;
+let touchShot = "weak";
 let game = null;
 let trailTick = -1;
 let replayLoadEpoch = 0;
@@ -529,8 +532,26 @@ canvas.addEventListener("pointerdown", (event) => {
   if (snapshot?.mode === "replay") return;
   aim = {...canvasPoint(event), visible: true};
   game?.setAim(aim.x, aim.y);
-  shoot(event.shiftKey ? "both" : event.button === 2 ? "strong" : "weak");
+  shoot(event.shiftKey ? "both" : event.button === 2 ? "strong" :
+    event.pointerType === "mouse" ? "weak" : touchShot);
 });
+for (const button of ui.shotButtons) {
+  button.addEventListener("click", () => {
+    touchShot = button.dataset.shot;
+    for (const other of ui.shotButtons) {
+      other.setAttribute("aria-pressed", String(other === button));
+    }
+  });
+}
+ui.fastForward.addEventListener("pointerdown", (event) => {
+  event.preventDefault();
+  ui.fastForward.setPointerCapture?.(event.pointerId);
+  if (snapshot?.mode !== "replay") startFastForward();
+});
+for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) {
+  ui.fastForward.addEventListener(type, stopFastForward);
+}
+ui.fastForward.addEventListener("contextmenu", (event) => event.preventDefault());
 canvas.addEventListener("contextmenu", (event) => event.preventDefault());
 canvas.addEventListener("wheel", (event) => {
   event.preventDefault();
@@ -608,3 +629,7 @@ BrowserGame.create(receiveSnapshot).then((instance) => {
   ui.openReplay.disabled = false;
 })
   .catch((error) => receiveSnapshot(null, error));
+
+if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
+  navigator.serviceWorker.register("./sw.js").catch(() => {});
+}
