@@ -40,14 +40,14 @@ self.addEventListener("activate", (event) => {
 async function rangeResponse(request, cached) {
   const match = /^bytes=(\d*)-(\d*)$/.exec(request.headers.get("range") || "");
   if (!match) return cached;
-  const buffer = await cached.arrayBuffer();
-  const total = buffer.byteLength;
-  let start = match[1] === "" ? Math.max(0, total - Number(match[2])) : Number(match[1]);
-  let end = match[1] === "" || match[2] === "" ? total - 1 : Math.min(Number(match[2]), total - 1);
+  const blob = await cached.blob();
+  const total = blob.size;
+  const start = match[1] === "" ? Math.max(0, total - Number(match[2])) : Number(match[1]);
+  const end = match[1] === "" || match[2] === "" ? total - 1 : Math.min(Number(match[2]), total - 1);
   if (start >= total || start > end) {
     return new Response(null, {status: 416, headers: {"Content-Range": `bytes */${total}`}});
   }
-  return new Response(buffer.slice(start, end + 1), {
+  return new Response(blob.slice(start, end + 1), {
     status: 206,
     headers: {
       "Content-Type": cached.headers.get("Content-Type") || "audio/mpeg",

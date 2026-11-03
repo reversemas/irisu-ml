@@ -2,6 +2,7 @@
 // time from static/music/), picks another random one when a track ends, and
 // downloads the files into CacheStorage in the background for offline play.
 export const MUSIC_CACHE_PREFIX = "irisu-music-";
+export const MUTE_KEY = "irisu:muted";
 
 export function pickNext(tracks, previous, random = Math.random) {
   if (!tracks.length) return null;
@@ -33,6 +34,8 @@ export async function cacheTracks(window, version, tracks) {
     } catch (_) {
       return; // offline or storage full; try again next launch
     }
+    // Yield between files so downloads never compete with gameplay.
+    if (window.setTimeout) await new Promise(resolve => window.setTimeout(resolve, 750));
   }
 }
 
@@ -41,6 +44,7 @@ export function createSoundtrack(document, window, {
   createAudio = () => new window.Audio(),
   loadTracks = () => defaultLoadTracks(window),
   cache = cacheTracks,
+  delayCache = 8000,
 } = {}) {
   const audio = createAudio();
   audio.preload = "auto";
@@ -50,6 +54,8 @@ export function createSoundtrack(document, window, {
   let startRequested = false;
   let wantPlay = false;
   let consecutiveErrors = 0;
+  let muted = false;
+  try { muted = window.localStorage?.getItem(MUTE_KEY) === "1"; } catch (_) { /* storage unavailable */ }
 
   function load(track) {
     currentTrack = track;
@@ -63,7 +69,7 @@ export function createSoundtrack(document, window, {
 
   function apply() {
     if (!tracks.length) return;
-    if (!wantPlay) {
+    if (!wantPlay || muted) {
       if (!audio.paused) audio.pause();
       return;
     }
@@ -75,7 +81,7 @@ export function createSoundtrack(document, window, {
   function playNext() {
     if (!tracks.length) return;
     load(pickNext(tracks, currentTrack, random));
-    if (wantPlay && startRequested) play();
+    if (wantPlay && !muted && startRequested) play();
   }
 
   audio.addEventListener("ended", () => { consecutiveErrors = 0; playNext(); });
@@ -90,6 +96,14 @@ export function createSoundtrack(document, window, {
     apply();
   }
 
+  function setMuted(value) {
+    muted = Boolean(value);
+    try { window.localStorage?.setItem(MUTE_KEY, muted ? "1" : "0"); } catch (_) { /* storage unavailable */ }
+    if (!muted) startRequested = true; // unmuting is itself a user gesture
+    apply();
+    return muted;
+  }
+
   function update(next = snapshot) {
     const newRun = Boolean(next && snapshot &&
       (next.seed !== snapshot.seed || next.mode !== snapshot.mode));
@@ -102,11 +116,12 @@ export function createSoundtrack(document, window, {
     apply();
   }
 
-  const ready = Promise.resolve().then(loadTracks).then(({version, tracks: list}) => {
+  const ready = Promise.resolve().then(loadTracks).then(async ({version, tracks: list}) => {
     tracks = list;
     apply();
+    if (delayCache) await new Promise(resolve => window.setTimeout(resolve, delayCache));
     return cache(window, version, list);
   }).catch(() => {});
 
-  return {update, start, ready, audio};
+  return {update, start, ready, audio, setMuted, toggleMute: () => setMuted(!muted), isMuted: () => muted};
 }

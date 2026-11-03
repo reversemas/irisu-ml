@@ -9,7 +9,7 @@ import {RestartGate} from "./restart-gate.mjs?v=20261006e";
 import {createSoundtrack} from "./music.mjs?v=20261006e";
 
 const canvas = document.querySelector("#game");
-const ctx = canvas.getContext("2d");
+const ctx = canvas.getContext("2d", {alpha: false});
 const $ = (selector) => document.querySelector(selector);
 const ui = {
   over: $("#gameOver"), again: $("#againButton"), finalTitle: $("#finalTitle"),
@@ -27,6 +27,7 @@ const ui = {
   runtimeLoading: $("#runtimeLoading"),
   shotButtons: document.querySelectorAll("[data-shot]"),
   fastForward: $("#fastForwardButton"),
+  mute: $("#muteButton"),
   appError: $("#appError"),
   toast: $("#toast"),
 };
@@ -131,6 +132,7 @@ function acceptSnapshot(next, force = false) {
   previousObservation = force ? null : snapshot?.observation || next.observation;
   snapshot = next;
   snapshotTime = performance.now();
+  dirty = true;
 }
 
 function canvasPoint(event) {
@@ -279,46 +281,74 @@ function drawBackdrop() {
   ctx.fillRect(0, 0, 640, 480);
 }
 
-function outlinedText(text, x, y, size, align = "left") {
-  ctx.save();
-  ctx.textAlign = align;
-  ctx.font = `italic 900 ${size}px "Trebuchet MS", sans-serif`;
-  ctx.lineJoin = "round";
-  ctx.strokeStyle = "#55152c";
-  ctx.lineWidth = 5;
-  ctx.strokeText(text, x, y);
-  ctx.fillStyle = "#f0e2a6";
-  ctx.fillText(text, x, y);
-  ctx.restore();
+function outlinedText(text, x, y, size, align = "left", c = ctx) {
+  c.save();
+  c.textAlign = align;
+  c.font = `italic 900 ${size}px "Trebuchet MS", sans-serif`;
+  c.lineJoin = "round";
+  c.strokeStyle = "#55152c";
+  c.lineWidth = 5;
+  c.strokeText(text, x, y);
+  c.fillStyle = "#f0e2a6";
+  c.fillText(text, x, y);
+  c.restore();
+}
+
+// The HUD text only changes when the level or score does, so render it once into
+// a small offscreen strip and blit it, instead of stroking text every frame.
+const HUD_Y = 400;
+function makeStrip() {
+  const strip = document.createElement("canvas");
+  strip.width = 640;
+  strip.height = 480 - HUD_Y;
+  const c = strip.getContext("2d");
+  c.translate(0, -HUD_Y);
+  return {canvas: strip, ctx: c, key: null};
+}
+const levelStrip = makeStrip();
+const scoreStrip = makeStrip();
+let gaugeGradient = null;
+
+function cachedStrip(strip, key, render) {
+  if (strip.key !== key) {
+    strip.key = key;
+    strip.ctx.clearRect(0, HUD_Y, 640, 480 - HUD_Y);
+    render(strip.ctx);
+  }
+  ctx.drawImage(strip.canvas, 0, HUD_Y);
 }
 
 function drawHud(state) {
-  outlinedText("Level", 21, 428, 28);
-  outlinedText(String(state.level), 52, 458, 25, "center");
+  cachedStrip(levelStrip, state.level, (c) => {
+    outlinedText("Level", 21, 428, 28, "left", c);
+    outlinedText(String(state.level), 52, 458, 25, "center", c);
+  });
 
   const trackX = 151, trackY = 437, trackW = 312, trackH = 15;
   ctx.fillStyle = "#33161eaa";
   ctx.fillRect(trackX, trackY, trackW, trackH);
   const ratio = Math.max(0, Math.min(1, state.gauge / state.gauge_max));
-  const gaugeGradient = ctx.createLinearGradient(trackX, 0, trackX + trackW, 0);
-  gaugeGradient.addColorStop(0, "#7c1b31");
-  gaugeGradient.addColorStop(1, "#b02a3f");
+  if (!gaugeGradient) {
+    gaugeGradient = ctx.createLinearGradient(trackX, 0, trackX + trackW, 0);
+    gaugeGradient.addColorStop(0, "#7c1b31");
+    gaugeGradient.addColorStop(1, "#b02a3f");
+  }
   ctx.fillStyle = gaugeGradient;
   ctx.fillRect(trackX, trackY, trackW * ratio, trackH);
   ctx.fillStyle = "#ffffff18";
   ctx.fillRect(trackX, trackY, trackW, 3);
 
   const digits = String(state.score).padStart(8, "0");
-  ctx.save();
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.font = "900 26px Georgia, serif";
-  ctx.strokeStyle = "#681a38";
-  ctx.lineWidth = 5;
-  ctx.strokeText(digits, 320, 462);
-  ctx.fillStyle = "#eee0a4";
-  ctx.fillText(digits, 320, 462);
-  ctx.restore();
+  cachedStrip(scoreStrip, digits, (c) => {
+    c.textAlign = "center";
+    c.textBaseline = "middle";
+    c.font = "900 26px Georgia, serif";
+    c.strokeStyle = "#681a38";
+    c.lineWidth = 5;
+    c.strokeText(digits, 320, 462);
+    c.fillStyle = "#eee0a4";
+    c.fillText(digits, 320, 462);
+  });
 }
 
 function drawScorePopups(now) {
@@ -358,13 +388,25 @@ function drawWalls(state) {
   ctx.fillRect(f.x + f.width + thick / 2, f.y, 3, f.height);
 }
 
+let oldBodiesSource = null;
+let oldBodiesById = null;
+
+function isSortedById(bodies) {
+  for (let i = 1; i < bodies.length; i++) if (bodies[i - 1].id > bodies[i].id) return false;
+  return true;
+}
+
 function interpolatedBodies(now) {
   const current = snapshot.observation;
   if (!previousObservation || previousObservation.tick === current.tick) return current.bodies;
   const tickGap = current.tick - previousObservation.tick;
   if (tickGap <= 0 || tickGap > 4) return current.bodies;
   const alpha = Math.min(1, (now - snapshotTime) / Math.min(60, Math.max(20, tickGap * 20)));
-  const oldBodies = new Map(previousObservation.bodies.map((body) => [body.id, body]));
+  if (oldBodiesSource !== previousObservation) {
+    oldBodiesSource = previousObservation;
+    oldBodiesById = new Map(previousObservation.bodies.map((body) => [body.id, body]));
+  }
+  const oldBodies = oldBodiesById;
   return current.bodies.map((body) => {
     const old = oldBodies.get(body.id);
     if (!old) return body;
@@ -380,12 +422,22 @@ function interpolatedBodies(now) {
   });
 }
 
+// While the game is paused and nothing is moving, the canvas already shows the
+// right picture, so skip repainting it (saves battery and GPU work).
+let dirty = true;
+
 function draw(now) {
+  if (!dirty && !snapshot?.running && scorePopups.length === 0) {
+    requestAnimationFrame(draw);
+    return;
+  }
+  dirty = false;
   drawBackdrop();
   if (snapshot) {
     const state = snapshot.observation;
     drawWalls(state);
-    [...interpolatedBodies(now)].sort((a, b) => a.id - b.id)
+    const bodies = interpolatedBodies(now);
+    (isSortedById(bodies) ? bodies : [...bodies].sort((a, b) => a.id - b.id))
       .forEach((body) => drawBody(body, now));
     drawScorePopups(now);
     drawHud(state);
@@ -435,6 +487,15 @@ function showReplayPosition(frame, totalFrames) {
     `${frame} / ${totalFrames} · ${seconds}s / ${totalSeconds}s`;
 }
 
+// Skip DOM writes whose value has not changed: syncUi runs every simulation tick
+// and rewriting identical button text forces needless layout work.
+const shown = Object.create(null);
+function once(key, value, apply) {
+  if (shown[key] === value) return;
+  shown[key] = value;
+  apply(value);
+}
+
 function syncUi() {
   if (!snapshot) return;
   soundtrack.update(snapshot);
@@ -442,7 +503,7 @@ function syncUi() {
   const replay = snapshot.replay;
   const replayMode = snapshot.mode === "replay";
   started ||= snapshot.running || state.tick > 0;
-  ui.pause.firstChild.textContent = snapshot.running ? "pause " : "resume ";
+  once("pauseLabel", snapshot.running ? "pause " : "resume ", (v) => { ui.pause.firstChild.textContent = v; });
   ui.pause.disabled = replayMode && replay.frame >= replay.total_frames;
   ui.paused.hidden = !started || snapshot.running || state.terminated || state.truncated;
   ui.over.hidden = replayMode ?
@@ -456,10 +517,10 @@ function syncUi() {
     ui.finalScore.textContent = `${String(state.score).padStart(8, "0")} · level ${state.level}`;
   }
   ui.saveReplay.hidden = replayMode || !snapshot.can_save_replay;
-  ui.again.textContent = replayMode ? "new game" : "try again";
+  once("againLabel", replayMode ? "new game" : "try again", (v) => { ui.again.textContent = v; });
   ui.replayControls.hidden = !replayMode;
   ui.app.classList.toggle("replay-mode", replayMode);
-  document.documentElement.dataset.mode = snapshot.mode;
+  once("mode", snapshot.mode, (v) => { document.documentElement.dataset.mode = v; });
   if (replayMode) {
     if (replay.cursor) aim = {x: replay.cursor.x, y: replay.cursor.y, visible: true};
     else aim.visible = false;
@@ -514,23 +575,25 @@ function receiveSnapshot(next, error) {
   document.documentElement.dataset.ready = "true";
   delete document.documentElement.dataset.error;
   document.documentElement.dataset.tick = String(next.observation.tick);
-  document.documentElement.dataset.seed = String(next.seed);
+  once("seed", String(next.seed), (v) => { document.documentElement.dataset.seed = v; });
   syncUi();
 }
 
 canvas.addEventListener("pointermove", (event) => {
   if (snapshot?.mode === "replay") return;
   aim = {...canvasPoint(event), visible: true};
+  dirty = true;
   game?.setAim(aim.x, aim.y);
 });
 canvas.addEventListener("pointerleave", () => {
-  if (snapshot?.mode !== "replay") aim.visible = false;
+  if (snapshot?.mode !== "replay") { aim.visible = false; dirty = true; }
 });
 canvas.addEventListener("pointerdown", (event) => {
   event.preventDefault();
   canvas.focus({preventScroll: true});
   if (snapshot?.mode === "replay") return;
   aim = {...canvasPoint(event), visible: true};
+  dirty = true;
   game?.setAim(aim.x, aim.y);
   shoot(event.shiftKey ? "both" : event.button === 2 ? "strong" :
     event.pointerType === "mouse" ? "weak" : touchShot);
@@ -548,6 +611,15 @@ ui.fastForward.addEventListener("pointerdown", (event) => {
   ui.fastForward.setPointerCapture?.(event.pointerId);
   if (snapshot?.mode !== "replay") startFastForward();
 });
+function syncMute() {
+  const muted = soundtrack.isMuted();
+  ui.mute.setAttribute("aria-pressed", String(muted));
+  const label = muted ? "Unmute music" : "Mute music";
+  ui.mute.setAttribute("aria-label", label);
+  ui.mute.title = label;
+}
+ui.mute.addEventListener("click", () => { soundtrack.toggleMute(); syncMute(); });
+syncMute();
 for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) {
   ui.fastForward.addEventListener(type, stopFastForward);
 }
@@ -619,6 +691,21 @@ window.addEventListener("keyup", (event) => {
   if (event.code === "Space") stopFastForward();
 });
 window.addEventListener("blur", stopFastForward);
+// Switching apps should not cost a run or burn battery in the background.
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) return;
+  stopFastForward();
+  if (snapshot?.running) setRunning(false);
+});
+if (window.matchMedia?.("(pointer: coarse)").matches) {
+  // Keep the page fixed: no pull-to-refresh, rubber-banding or pinch zoom.
+  document.addEventListener("touchmove", (event) => {
+    if (!event.target.closest?.("input, select")) event.preventDefault();
+  }, {passive: false});
+  for (const type of ["gesturestart", "gesturechange"]) {
+    document.addEventListener(type, (event) => event.preventDefault());
+  }
+}
 
 draw();
 BrowserGame.create(receiveSnapshot).then((instance) => {

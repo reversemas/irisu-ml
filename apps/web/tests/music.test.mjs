@@ -16,10 +16,12 @@ function fakeAudio() {
   };
 }
 
-async function setup(random = () => 0, list = tracks) {
+async function setup(random = () => 0, list = tracks, storage = new Map()) {
   const audio = fakeAudio();
-  const music = createSoundtrack({}, {location: {protocol: "capacitor:"}}, {
+  const localStorage = {getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value)};
+  const music = createSoundtrack({}, {location: {protocol: "capacitor:"}, localStorage, setTimeout}, {
     random, createAudio: () => audio, loadTracks: async () => ({version: "v", tracks: list}), cache: async () => {},
+    delayCache: 0,
   });
   await music.ready;
   return {audio, music};
@@ -89,4 +91,44 @@ test("no tracks means silence without errors", async () => {
   music.start();
   music.update(running());
   assert.equal(audio.plays, 0);
+});
+
+test("mute pauses immediately, blocks playback and track changes, and unmuting resumes", async () => {
+  const {audio, music} = await setup(() => 0);
+  music.start();
+  music.update(running());
+  assert.equal(audio.paused, false);
+  assert.equal(music.setMuted(true), true);
+  assert.equal(audio.paused, true);
+  const plays = audio.plays;
+  audio.emit("ended");
+  music.update(running(1));
+  assert.equal(audio.plays, plays);
+  assert.equal(audio.paused, true);
+  assert.equal(music.toggleMute(), false);
+  assert.equal(audio.paused, false);
+});
+
+test("the mute choice is remembered across launches", async () => {
+  const storage = new Map();
+  const first = await setup(() => 0, tracks, storage);
+  first.music.setMuted(true);
+  assert.equal(storage.get("irisu:muted"), "1");
+  const second = await setup(() => 0, tracks, storage);
+  assert.equal(second.music.isMuted(), true);
+  second.music.start();
+  second.music.update(running());
+  assert.equal(second.audio.plays, 0);
+  second.music.setMuted(false);
+  assert.equal(storage.get("irisu:muted"), "0");
+  assert.equal(second.audio.plays, 1);
+});
+
+test("unmuting works as the first gesture even before any shot was fired", async () => {
+  const storage = new Map([["irisu:muted", "1"]]);
+  const {audio, music} = await setup(() => 0, tracks, storage);
+  music.update(running());
+  assert.equal(audio.plays, 0);
+  music.setMuted(false);
+  assert.equal(audio.plays, 1);
 });
