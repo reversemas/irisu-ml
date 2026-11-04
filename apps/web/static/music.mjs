@@ -123,5 +123,6 @@ export function createSoundtrack(document, window, {
     return cache(window, version, list);
   }).catch(() => {});
 
-  return {update, start, ready, audio, setMuted, toggleMute: () => setMuted(!muted), isMuted: () => muted};
+  return {update, start, ready, audio, setMuted, toggleMute: () => setMuted(!muted), isMuted: () => muted,
+    trackCount: () => tracks.length};
 }

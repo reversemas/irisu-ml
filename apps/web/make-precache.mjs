@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Post-build step for a site dir:
 //  - music.json: list of audio files in music/ (loaded by music.mjs)
-//  - precache.json: app-shell file list + content-hash version (used by sw.js)
+//  - sw.js: stamped with the app-shell file list + content-hash version
 // Music is deliberately not in the shell precache; the page downloads it in the
 // background so a large soundtrack can never block service-worker install.
 import {createHash} from "node:crypto";
@@ -30,7 +30,7 @@ const files = [];
     const path = join(current, name);
     if (statSync(path).isDirectory()) { walk(path); continue; }
     const rel = relative(dir, path).split("\\").join("/");
-    if (rel === "sw.js" || rel === "precache.json" || rel === "CNAME" || rel.startsWith(".")) continue;
+    if (rel === "sw.js" || rel === "CNAME" || rel.startsWith(".")) continue;
     if (rel.startsWith("music/")) continue;
     if (rel.startsWith("exact-runtime/") && rel !== "exact-runtime/libv86.js") continue;
     files.push(rel);
@@ -40,6 +40,12 @@ const files = [];
 const hash = createHash("sha256");
 for (const file of files) hash.update(file).update(readFileSync(join(dir, file)));
 const version = hash.digest("hex").slice(0, 16);
-writeFileSync(join(dir, "precache.json"),
-  JSON.stringify({version, files: ["./", ...files.map(file => `./${file}`)]}, null, 2) + "\n");
-console.log(`precache.json: ${files.length + 1} entries, version ${version}`);
+
+// Stamp the build into the service worker (see sw.js).
+const swPath = join(dir, "sw.js");
+const swSource = readFileSync(swPath, "utf8");
+const marker = "/*__BUILD__*/ null";
+if (!swSource.includes(marker)) { console.error("sw.js is missing its build marker"); process.exit(1); }
+const build = {version, files: ["./", ...files.map(file => `./${file}`)]};
+writeFileSync(swPath, swSource.replace(marker, JSON.stringify(build)));
+console.log(`sw.js stamped: ${build.files.length} precached files, version ${version}`);

@@ -7,6 +7,7 @@ import {
 } from "./replay.mjs?v=20261006e";
 import {RestartGate} from "./restart-gate.mjs?v=20261006e";
 import {createSoundtrack} from "./music.mjs?v=20261006e";
+import {offlineStatus} from "./offline.mjs?v=20261103a";
 
 const canvas = document.querySelector("#game");
 const ctx = canvas.getContext("2d", {alpha: false});
@@ -81,11 +82,38 @@ function continueFastForward() {
   fastForwardTimer = setTimeout(stopFastForward, fastForwardIdleMs);
 }
 
-function showToast(text) {
+function showToast(text, ms = 1200) {
   ui.toast.textContent = text;
   ui.toast.classList.add("show");
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => ui.toast.classList.remove("show"), 1200);
+  toastTimer = setTimeout(() => ui.toast.classList.remove("show"), ms);
+}
+
+// Tell the player when the app is fully stored for offline play, and when the
+// system has cleared that storage (iOS can do this under storage pressure).
+async function watchOffline() {
+  if (!("serviceWorker" in navigator) || !window.caches || !location.protocol.startsWith("http")) return;
+  try { await navigator.storage?.persist?.(); } catch (_) { /* optional */ }
+  const flag = "irisu:offline-ready";
+  let wasReady = false;
+  try { wasReady = localStorage.getItem(flag) === "1"; } catch (_) { /* storage unavailable */ }
+  for (let attempt = 0; attempt < 14; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 5000 : 10000));
+    let status;
+    try { status = await offlineStatus(window, soundtrack.trackCount()); } catch (_) { return; }
+    document.documentElement.dataset.offline = status.ready ? "ready" : "partial";
+    if (status.ready) {
+      if (!wasReady) {
+        try { localStorage.setItem(flag, "1"); } catch (_) { /* storage unavailable */ }
+        showToast("Ready for offline play", 2600);
+      }
+      return;
+    }
+  }
+  if (wasReady) {
+    try { localStorage.removeItem(flag); } catch (_) { /* storage unavailable */ }
+    showToast("Offline files were cleared. Stay online to download them again.", 5000);
+  }
 }
 
 function showPersistentError(text = "") {
@@ -559,15 +587,31 @@ function syncUi() {
   }
 }
 
+// A failed download shows up as "Failed to fetch" (Chrome) or "Load failed" (Safari),
+// followed by a stack trace. Say what actually happened and how to fix it.
+function isNetworkFailure(error) {
+  return /failed to fetch|load failed|networkerror/i.test(error?.message || String(error));
+}
+
+function friendlyError(error) {
+  if (!isNetworkFailure(error)) return error?.message || String(error);
+  return navigator.onLine === false ?
+    "The game files are not stored on this device (it may have cleared them). Connect to the internet and they will download again." :
+    "The game files could not be downloaded. Check your connection and try again.";
+}
+
 function receiveSnapshot(next, error) {
   if (error) {
+    const message = friendlyError(error);
     document.documentElement.dataset.ready = "false";
     document.documentElement.dataset.error = error.message;
-    ui.replayError.textContent = error.message;
+    ui.replayError.textContent = message;
     ui.replayError.hidden = false;
-    showPersistentError(error.message);
+    showPersistentError(message);
     if (ui.runtimeLoading) ui.runtimeLoading.hidden = true;
-    showToast(error.message);
+    showToast(message, 6000);
+    // Retry by itself as soon as the connection is back.
+    if (isNetworkFailure(error)) window.addEventListener("online", () => location.reload(), {once: true});
     return;
   }
   acceptSnapshot(next);
@@ -714,6 +758,7 @@ BrowserGame.create(receiveSnapshot).then((instance) => {
   document.documentElement.dataset.backend = "exact-v86";
   document.documentElement.dataset.ready = "true";
   ui.openReplay.disabled = false;
+  void watchOffline();
 })
   .catch((error) => receiveSnapshot(null, error));
 

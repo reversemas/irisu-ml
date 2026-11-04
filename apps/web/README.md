@@ -29,6 +29,17 @@ After the first load the page downloads the files into CacheStorage in the backg
 the service worker serves them (with byte-range support, which Safari requires), so music
 works offline. Without any files the game is simply silent.
 
+## Offline
+
+`make-precache.mjs` stamps the file list and a content hash into `sw.js` at build time. Each
+deploy therefore installs a new service worker that downloads the whole new app into its own
+cache in the background and takes over after the app is closed and reopened; older caches are
+only deleted once the new one exists. Everything is served cache-first, so a weak or hanging
+connection cannot block startup. The emulator runtime and the music are stored in their own
+caches (by `exact-worker.js` and `music.mjs`) and the worker serves them from there. The page
+shows "Ready for offline play" once everything is stored, and says so if the system later
+clears it.
+
 ## Build the static exact app
 
 Build the existing 32-bit exact worker and provide its MSVC9 r58 host, then run:
