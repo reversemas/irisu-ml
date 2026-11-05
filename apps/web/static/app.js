@@ -481,15 +481,29 @@ function drawHud(state) {
   }
 
   const digits = String(state.score).padStart(8, "0");
-  cachedStrip(scoreStrip, digits, (c) => {
-    c.textAlign = "center";
+  const metsuLayout = gameMode === "metsu";
+  // In Metsu the score relocates to the left side (beside the vertical life
+  // gauge), smaller and left-aligned, matching the original layout. The cache
+  // key is namespaced by mode so a mode switch always re-renders the strip.
+  cachedStrip(scoreStrip, (metsuLayout ? "m:" : "n:") + digits, (c) => {
     c.textBaseline = "middle";
-    c.font = "900 26px Georgia, serif";
-    c.strokeStyle = "#681a38";
-    c.lineWidth = 5;
-    c.strokeText(digits, 320, 462);
-    c.fillStyle = "#eee0a4";
-    c.fillText(digits, 320, 462);
+    if (metsuLayout) {
+      c.textAlign = "left";
+      c.font = "900 22px Georgia, serif";
+      c.strokeStyle = "#2a1640";
+      c.lineWidth = 4;
+      c.strokeText(digits, 78, 462);
+      c.fillStyle = "#eee0a4";
+      c.fillText(digits, 78, 462);
+    } else {
+      c.textAlign = "center";
+      c.font = "900 26px Georgia, serif";
+      c.strokeStyle = "#681a38";
+      c.lineWidth = 5;
+      c.strokeText(digits, 320, 462);
+      c.fillStyle = "#eee0a4";
+      c.fillText(digits, 320, 462);
+    }
   });
 }
 
