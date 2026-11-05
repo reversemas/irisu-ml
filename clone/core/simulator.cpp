@@ -17,8 +17,8 @@ namespace irisu {
 namespace {
 
 constexpr std::uint32_t kSnapshotMagic = 0x49524953U;  // IRIS
-constexpr std::uint32_t kSnapshotVersion = 7;
-constexpr std::size_t kSerializedBodyBytes = 227;
+constexpr std::uint32_t kSnapshotVersion = 8;
+constexpr std::size_t kSerializedBodyBytes = 232;
 constexpr std::size_t kSerializedGroupBytes = 16;
 constexpr std::size_t kSerializedContactImpulseBytes = 58;
 constexpr std::size_t kSerializedBroadPhaseBoundBytes = 6;
@@ -456,6 +456,8 @@ void serialize_body(std::vector<std::byte>& output, const Body& body) {
   append_integer(output, static_cast<std::uint8_t>(body.pending_delete));
   append_integer(output, static_cast<std::uint8_t>(body.sleeping));
   append_double(output, body.sleep_time);
+  append_integer(output, static_cast<std::uint8_t>(body.bubble));
+  append_integer(output, body.pop_countdown);
 }
 
 void serialize_contact_impulse(std::vector<std::byte>& output,
@@ -559,6 +561,8 @@ Body deserialize_body(std::span<const std::byte> input, std::size_t& offset) {
   body.pending_delete = read_bool(input, offset);
   body.sleeping = read_bool(input, offset);
   body.sleep_time = read_double(input, offset);
+  body.bubble = read_bool(input, offset);
+  body.pop_countdown = read_integer<std::int32_t>(input, offset);
   return body;
 }
 
@@ -699,9 +703,23 @@ void validate_snapshot_payload(const MechanicsConfig& config, const Snapshot& sn
         body.kind != BodyKind::Piece ||
         (!body.special && body.color >= 0 &&
          static_cast<std::uint32_t>(body.color) < config.maximum_colors &&
-         body.density == config.piece_density &&
-         body.friction == config.piece_friction &&
-         body.restitution == config.piece_restitution);
+         (body.bubble
+              ? (body.density == config.bubble_density &&
+                 body.friction == config.bubble_friction &&
+                 body.restitution == config.bubble_restitution &&
+                 body.shape == Shape::Circle)
+              : (body.density == config.piece_density &&
+                 body.friction == config.piece_friction &&
+                 body.restitution == config.piece_restitution)));
+    const bool bubble_state_valid =
+        !body.bubble ||
+        (config.metsu_mode && body.kind == BodyKind::Piece && !body.special &&
+         body.rule_guard_f0 == 1 &&
+         (body.pop_countdown == -1 ||
+          (body.pop_countdown >= 0 &&
+           static_cast<std::uint32_t>(body.pop_countdown) <=
+               config.bubble_pop_delay)) &&
+         body.remaining_lifetime == -1);
     const bool projectile_identity =
         body.kind != BodyKind::Projectile ||
         (!body.special && body.shape == Shape::Box && body.color == -1 &&
@@ -730,16 +748,24 @@ void validate_snapshot_payload(const MechanicsConfig& config, const Snapshot& sn
     const bool lifecycle_valid =
         body.freshness_state >= 1 && body.freshness_state <= 3 &&
         body.native_state_valid && body.native_center_valid &&
-        body.lifecycle == projected && body.grouped == (body.chain_id != 0) &&
-        body.size_slot < config.piece_sizes.size() && body.rule_guard_f0 == 0 &&
+        body.lifecycle == projected &&
+        // Scheduled bubbles carry a group reference without the grouped flag
+        // until they pop; every other actor pairs the two exactly.
+        (body.bubble
+             ? (body.chain_id == 0 ? !body.grouped
+                                   : (body.grouped || body.pop_countdown >= 0))
+             : body.grouped == (body.chain_id != 0)) &&
+        body.size_slot < config.piece_sizes.size() &&
+        (body.bubble ? body.rule_guard_f0 == 1 : body.rule_guard_f0 == 0) &&
         body.actor_slot < MechanicsConfig::actor_pool_capacity &&
         (body.actor_slot == 0 || body.actor_slot >= 5) &&
         !(body.delete_marked && body.pending_delete) &&
         (body.remaining_lifetime > 0 || body.delete_marked ||
-         body.pending_delete) &&
+         body.pending_delete || body.bubble) &&
         (!body.successful_clear_pending ||
          (body.grouped && body.kind != BodyKind::Projectile)) &&
         piece_identity && projectile_identity && bonus_identity &&
+        bubble_state_valid &&
         (body.freshness_state != 3 || body.kind == BodyKind::Piece) &&
         body.projectile_hits <= 2 &&
         (body.kind != BodyKind::Projectile || body.physics_owned) &&
@@ -1165,7 +1191,13 @@ Observation Simulator::reset(std::uint64_t seed_value) {
   gauge_ = config_.gauge_initial;
   level_ = 1;
   qualifying_clear_count_ = 0;
-  level_shape_cutoff_ = rng_.get_rand(config_.shape_random_max);
+  if (config_.metsu_mode) {
+    // The Metsu setter keeps T = 100 without consuming the GetRand(100)
+    // shape-cutoff draw, so every square roll resolves to a box.
+    level_shape_cutoff_ = 100;
+  } else {
+    level_shape_cutoff_ = rng_.get_rand(config_.shape_random_max);
+  }
   next_special_clear_count_ =
       static_cast<std::uint64_t>(config_.special_clear_base) +
       rng_.get_rand(config_.special_clear_random_max);
@@ -1376,6 +1408,8 @@ Observation Simulator::observation() const {
     observed.age_ticks = body.age_ticks;
     observed.remaining_lifetime = body.remaining_lifetime;
     observed.rot_timer = body.rot_timer;
+    observed.bubble = body.bubble;
+    observed.pop_countdown = body.pop_countdown;
     result.bodies.push_back(observed);
   }
   result.field_x = config_.field_x;
@@ -1400,6 +1434,13 @@ std::uint32_t Simulator::current_color_count() const {
 
 std::uint32_t Simulator::color_count_for_level(
     std::uint32_t parameter_level) const {
+  if (config_.metsu_mode) {
+    const auto recovered =
+        metsu_level_parameters(std::min<std::uint32_t>(parameter_level, 99U))
+            .maximum_color_id +
+        1U;
+    return std::clamp(recovered, config_.starting_colors, config_.maximum_colors);
+  }
   const auto recovered =
       normal_level_parameters(std::min<std::uint32_t>(parameter_level, 99U))
           .maximum_color_id +
@@ -1413,9 +1454,26 @@ std::uint32_t Simulator::current_spawn_interval() const {
 
 std::uint32_t Simulator::spawn_interval_for_level(
     std::uint32_t parameter_level) const {
+  if (config_.metsu_mode) {
+    if (config_.spawn_interval_ticks != 120U) {
+      return config_.spawn_interval_ticks;
+    }
+    return metsu_level_parameters(std::min<std::uint32_t>(parameter_level, 99U))
+        .spawn_interval_frames;
+  }
   if (config_.spawn_interval_ticks != 100U) return config_.spawn_interval_ticks;
   return normal_level_parameters(std::min<std::uint32_t>(parameter_level, 99U))
       .spawn_interval_frames;
+}
+
+std::uint32_t Simulator::bubble_spawn_interval_for_level(
+    std::uint32_t parameter_level) const {
+  if (!config_.metsu_mode) return 0;
+  if (config_.bubble_spawn_interval_ticks != 175U) {
+    return config_.bubble_spawn_interval_ticks;
+  }
+  return metsu_level_parameters(std::min<std::uint32_t>(parameter_level, 99U))
+      .bubble_spawn_interval_frames;
 }
 
 std::uint32_t Simulator::allocate_actor_slot() {
@@ -1603,25 +1661,72 @@ void Simulator::tick_once(bool left_level, bool right_level, double cursor_x,
 }
 
 BodyId Simulator::spawn_random_piece(double y,
-                                     std::uint32_t parameter_level) {
+                                     std::uint32_t parameter_level,
+                                     bool bubble) {
   if (next_body_id_ > kMaximumBodyId) return 0;
-  std::uint64_t wide_total_weight = 0;
-  for (const auto weight : config_.piece_size_weights) {
-    wide_total_weight += weight;
+  const auto& sizes = bubble ? config_.bubble_sizes
+                  : (config_.metsu_mode ? config_.metsu_piece_sizes
+                                        : config_.piece_sizes);
+  const auto& weights = bubble ? config_.bubble_size_weights
+                     : (config_.metsu_mode ? config_.metsu_piece_size_weights
+                                           : config_.piece_size_weights);
+  // Both spawn kinds draw their size ticket over the SQUARE table total;
+  // the executable indexes the selected flat table with that ticket. In the
+  // shipped metsu profile the bubble ticket (0..69) therefore only reaches
+  // the first three bubble sizes: 42, 58, and 74.
+  const auto& ticket_weights = config_.metsu_mode
+                                   ? config_.metsu_piece_size_weights
+                                   : config_.piece_size_weights;
+  std::uint64_t ticket_total = 0;
+  for (const auto weight : ticket_weights) {
+    ticket_total += weight;
   }
-  const auto total_weight = static_cast<std::uint32_t>(wide_total_weight);
-  auto choice = rng_.get_rand(total_weight - 1U);
+  const auto ticket_weight = static_cast<std::uint32_t>(ticket_total);
+  auto choice = rng_.get_rand(ticket_weight - 1U);
   std::size_t size_slot = 0;
-  while (choice >= config_.piece_size_weights[size_slot] &&
-         size_slot + 1 < config_.piece_size_weights.size()) {
-    choice -= config_.piece_size_weights[size_slot++];
+  if (bubble) {
+    // Walk the full bubble table; the ticket may exceed the reachable prefix
+    // only when the tables are reconfigured, in which case clamp like the
+    // executable's guarded index.
+    std::uint64_t walked = 0;
+    size_slot = weights.size() - 1;
+    for (std::size_t index = 0; index < weights.size(); ++index) {
+      walked += weights[index];
+      if (choice < walked) {
+        size_slot = index;
+        break;
+      }
+    }
+  } else {
+    while (choice >= weights[size_slot] &&
+           size_slot + 1 < weights.size()) {
+      choice -= weights[size_slot++];
+    }
   }
-  const double size = config_.piece_sizes[size_slot];
-  const auto x_max = static_cast<std::uint32_t>(
-      std::trunc(config_.field_width - config_.field_thickness));
-  const Vec2 position{
-      config_.field_x + static_cast<double>(rng_.get_rand(x_max)),
-      y};
+  const double size = sizes[size_slot];
+  Vec2 position{};
+  if (bubble) {
+    const auto x_max = static_cast<std::uint32_t>(std::trunc(
+        config_.field_width - config_.field_thickness -
+        2.0 * config_.bubble_x_adjust));
+    // X draws first, then the ex_block_y2 draw. ex_block_y2 is 0 in the
+    // shipped profile, but the raw RNG word is consumed exactly like the
+    // executable's GetRand(0).
+    const auto x = config_.field_x + config_.bubble_x_adjust +
+                   static_cast<double>(rng_.get_rand(x_max));
+    const auto y_offset = rng_.get_rand(0);
+    position = {x, config_.bubble_spawn_y + static_cast<double>(y_offset)};
+  } else if (config_.metsu_mode) {
+    const auto x_max = static_cast<std::uint32_t>(
+        std::trunc(config_.field_width - 40.0));
+    position = {config_.field_x + 30.0 + static_cast<double>(rng_.get_rand(x_max)),
+                y};
+  } else {
+    const auto x_max = static_cast<std::uint32_t>(
+        std::trunc(config_.field_width - config_.field_thickness));
+    position = {config_.field_x + static_cast<double>(rng_.get_rand(x_max)),
+                y};
+  }
   const auto actor_slot = allocate_actor_slot();
   if (actor_slot == std::numeric_limits<std::uint32_t>::max()) return 0;
   const double angle = normal_spawn_angle(
@@ -1629,11 +1734,15 @@ BodyId Simulator::spawn_random_piece(double y,
   const auto color = static_cast<std::int32_t>(
       rng_.get_rand(color_count_for_level(parameter_level) - 1U));
   const bool special_spawn =
-      qualifying_clear_count_ >= next_special_clear_count_;
+      !bubble && qualifying_clear_count_ >= next_special_clear_count_;
   Shape shape = Shape::Circle;
   if (!special_spawn) {
     const auto shape_roll = rng_.get_rand(config_.shape_random_max);
-    shape = shape_roll > level_shape_cutoff_ ? Shape::Triangle : Shape::Box;
+    if (bubble) {
+      shape = Shape::Circle;
+    } else {
+      shape = shape_roll > level_shape_cutoff_ ? Shape::Triangle : Shape::Box;
+    }
   }
   Body body;
   body.id = next_body_id_;
@@ -1645,20 +1754,39 @@ BodyId Simulator::spawn_random_piece(double y,
   body.position = position;
   body.angle = angle;
   body.size = special_spawn ? config_.bonus_size : size;
-  body.density = special_spawn ? config_.bonus_density : config_.piece_density;
-  body.friction = special_spawn ? config_.bonus_friction : config_.piece_friction;
+  body.density = special_spawn ? config_.bonus_density
+               : bubble ? config_.bubble_density
+                        : config_.piece_density;
+  body.friction = special_spawn ? config_.bonus_friction
+                : bubble ? config_.bubble_friction
+                         : config_.piece_friction;
   body.restitution = special_spawn ? config_.bonus_restitution
-                                   : config_.piece_restitution;
+                    : bubble ? config_.bubble_restitution
+                             : config_.piece_restitution;
   body.size_slot = static_cast<std::uint32_t>(size_slot);
-  body.remaining_lifetime = static_cast<std::int64_t>(config_.piece_life_ticks);
-  body.scripted_velocity = {
-      0.0, stored_float(uses_nominal_scripted_fall(config_.scripted_fall_speed)
-                            ? normal_level_parameters(
-                                  std::min<std::uint32_t>(parameter_level, 99U))
-                                  .scripted_descent_per_update
-                            : config_.scripted_fall_speed)};
+  body.remaining_lifetime =
+      bubble ? std::int64_t{-1}
+             : static_cast<std::int64_t>(config_.piece_life_ticks);
+  if (bubble) {
+    body.scripted_velocity = {0.0, stored_float(config_.bubble_rise_speed)};
+  } else if (config_.metsu_mode) {
+    body.scripted_velocity = {
+        0.0, stored_float(metsu_level_parameters(
+                  std::min<std::uint32_t>(parameter_level, 99U))
+                  .scripted_descent_per_update)};
+  } else {
+    body.scripted_velocity = {
+        0.0, stored_float(uses_nominal_scripted_fall(config_.scripted_fall_speed)
+                              ? normal_level_parameters(
+                                    std::min<std::uint32_t>(parameter_level, 99U))
+                                    .scripted_descent_per_update
+                              : config_.scripted_fall_speed)};
+  }
   body.special = special_spawn;
   body.freshness_state = 1;
+  body.bubble = bubble;
+  body.rule_guard_f0 = bubble ? 1U : 0U;
+  body.pop_countdown = -1;
   actor_pool_colors_[actor_slot] = body.color;
   physics_.initialize_mass(body);
   numeric_guard_required_ =
@@ -1672,22 +1800,42 @@ BodyId Simulator::spawn_random_piece(double y,
 void Simulator::maybe_spawn(std::uint32_t parameter_level,
                             std::vector<Event>& events) {
   const auto interval = spawn_interval_for_level(parameter_level);
-  if (interval == 0 || scene_frame_ % interval != 0) return;
-  if (spawn_count_ == std::numeric_limits<std::uint64_t>::max()) return;
-  const BodyId id = spawn_random_piece(config_.spawn_y, parameter_level);
-  if (id == 0) return;
-  const Body* body = find_body(id);
-  if (body == nullptr) throw std::logic_error("spawned body is missing");
-  const bool special_spawn = body->special;
-  if (special_spawn) {
-    const auto offset = static_cast<std::uint64_t>(config_.special_clear_base) +
-                        rng_.get_rand(config_.special_clear_random_max);
-    next_special_clear_count_ = checked_u64_add(
-        qualifying_clear_count_, offset, "special-clear scheduler overflow");
+  const bool square_due =
+      interval != 0 && scene_frame_ % interval == 0;
+  const auto bubble_interval = bubble_spawn_interval_for_level(parameter_level);
+  const bool bubble_due = config_.metsu_mode && bubble_interval != 0 &&
+                          scene_frame_ % bubble_interval == 0;
+  if (square_due) {
+    if (spawn_count_ != std::numeric_limits<std::uint64_t>::max()) {
+      const BodyId id = spawn_random_piece(config_.spawn_y, parameter_level);
+      if (id != 0) {
+        const Body* body = find_body(id);
+        if (body == nullptr) throw std::logic_error("spawned body is missing");
+        if (body->special) {
+          const auto offset =
+              static_cast<std::uint64_t>(config_.special_clear_base) +
+              rng_.get_rand(config_.special_clear_random_max);
+          next_special_clear_count_ = checked_u64_add(
+              qualifying_clear_count_, offset, "special-clear scheduler overflow");
+        }
+        ++spawn_count_;
+        events.push_back({tick_, EventKind::Spawned, id, 0,
+                          static_cast<std::int64_t>(spawn_count_),
+                          "v2.03 normal spawn"});
+      }
+    }
   }
-  ++spawn_count_;
-  events.push_back({tick_, EventKind::Spawned, id, 0, static_cast<std::int64_t>(spawn_count_),
-                    "v2.03 normal spawn"});
+  if (bubble_due) {
+    const BodyId id =
+        spawn_random_piece(config_.bubble_spawn_y, parameter_level, true);
+    if (id != 0) {
+      // spawn_count_ keeps its normal-mode meaning (square cadence ordinal);
+      // bubbles do not advance it, so the snapshot invariant spawn_count <=
+      // tick keeps holding when both spawns fire on the same frame.
+      events.push_back({tick_, EventKind::Spawned, id, 0, 0,
+                        "metsu bubble spawn"});
+    }
+  }
 }
 
 void Simulator::process_contacts(const std::vector<Contact>& contacts,
@@ -1769,17 +1917,89 @@ void Simulator::process_contacts(const std::vector<Contact>& contacts,
     return true;
   };
   const auto top_gate = [&](Participant& target, const Participant& source) {
-    if (target.body == nullptr || target.contact_class() != 4 ||
-        target.body->physics_owned || source.contact_class() != 6) {
+    if (target.body == nullptr || target.body->physics_owned) {
       return false;
     }
-    target.body->top_contact_pending = true;
-    return true;
+    if (target.contact_class() == 4 && source.contact_class() == 6) {
+      target.body->top_contact_pending = true;
+      return true;
+    }
+    // Metsu: a scripted bubble touching the bottom fixture latches e4 and
+    // short-circuits exactly like the normal top gate.
+    if (config_.metsu_mode && target.body->bubble &&
+        source.contact_class() == 2) {
+      target.body->top_contact_pending = true;
+      return true;
+    }
+    return false;
+  };
+  const auto schedule_bubble_pop = [&](Participant& target) {
+    target.body->pop_countdown =
+        static_cast<std::int32_t>(config_.bubble_pop_delay);
+    target.body->physics_owned = true;
+    refresh_lifecycle(*target.body);
+    events.push_back({tick_, EventKind::BubbleActivated, target.body->id, 0,
+                      target.body->pop_countdown,
+                      "metsu bubble activation and pop schedule"});
+  };
+  const auto join_group = [&](Participant& target,
+                              Participant& source) -> GroupState* {
+    GroupState* group = nullptr;
+    if (source.body != nullptr && source.body->grouped) {
+      group = find_group(source.body->chain_id);
+      if (group == nullptr ||
+          group->chain == std::numeric_limits<std::uint32_t>::max()) {
+        return nullptr;
+      }
+    } else {
+      if (next_chain_id_ == std::numeric_limits<ChainId>::max() ||
+          groups_.size() >= kMaximumSnapshotGroups) {
+        return nullptr;
+      }
+      GroupState created;
+      created.id = next_chain_id_;
+      groups_.push_back(created);
+      ++next_chain_id_;
+      group = &groups_.back();
+    }
+    ++group->chain;
+    ++group->secondary_count;
+    target.body->chain_id = group->id;
+    refresh_lifecycle(*target.body);
+    events.push_back({tick_, EventKind::ChainJoined, target.body->id,
+                      source.body == nullptr ? 0 : source.body->id,
+                      group->id, "metsu group membership"});
+    return group;
   };
   const auto add_to_group = [&](Participant& target,
                                 Participant& source) {
     if (target.body == nullptr || target.contact_class() != 4 ||
         target.body->grouped) {
+      return;
+    }
+    if (config_.metsu_mode && target.body->bubble) {
+      if (source.body != nullptr && source.body->bubble) {
+        // Bubble-to-bubble chain spread: only an unscheduled bubble joining a
+        // bubble inside its activation window (0 < f4 <= 0x70) is scheduled.
+        if (target.body->pop_countdown == -1 &&
+            source.body->pop_countdown > 0 &&
+            static_cast<std::uint32_t>(source.body->pop_countdown) <=
+                config_.bubble_chain_window) {
+          if (join_group(target, source) == nullptr) return;
+          schedule_bubble_pop(target);
+        }
+        return;
+      }
+      // Square target pairing is rejected before this point, so the source is
+      // a square: join its group, then either activate (grouped square) or
+      // silently mark the bubble grouped like the executable's else path.
+      if (join_group(target, source) == nullptr) return;
+      if (source.body != nullptr && source.body->grouped) {
+        schedule_bubble_pop(target);
+      } else {
+        target.body->grouped = true;
+        refresh_lifecycle(*target.body);
+      }
       return;
     }
     GroupState* group = nullptr;
@@ -1814,12 +2034,42 @@ void Simulator::process_contacts(const std::vector<Contact>& contacts,
         (a.grouped() && b.grouped())) {
       return;
     }
+    // Metsu rejects rotten-bubble pairs in either orientation.
+    if (config_.metsu_mode &&
+        ((a.rotten() && b.body != nullptr && b.body->bubble) ||
+         (b.rotten() && a.body != nullptr && a.body->bubble))) {
+      return;
+    }
     add_to_group(a, b);
     add_to_group(b, a);
   };
   const auto activate = [&](Participant& target, Participant& source) {
-    if (target.body == nullptr || target.body->physics_owned ||
-        !source.physics_owned() || source.contact_class() == 3) {
+    if (target.body == nullptr || target.body->physics_owned) {
+      return;
+    }
+    if (config_.metsu_mode && target.body->bubble) {
+      // Metsu bubble path: succumb to physics when touching a fresh
+      // projectile (the white/gray shot) or a scripted non-bubble square.
+      const bool from_projectile =
+          source.contact_class() == 5 && source.body != nullptr &&
+          source.body->rot_timer == 0;
+      const bool from_scripted_square =
+          source.contact_class() == 4 && source.body != nullptr &&
+          !source.body->bubble && !source.body->physics_owned;
+      if (!from_projectile && !from_scripted_square) {
+        return;
+      }
+      target.body->physics_owned = true;
+      refresh_lifecycle(*target.body);
+      events.push_back({tick_, EventKind::Activated, target.body->id,
+                        source.body == nullptr ? 0 : source.body->id, 0,
+                        "metsu bubble physics activation"});
+      if (source.contact_class() == 5 && source.body != nullptr) {
+        mark_deleted(*source.body, false);
+      }
+      return;
+    }
+    if (!source.physics_owned() || source.contact_class() == 3) {
       return;
     }
     if (source.grouped() && !same_color(target, source) &&
@@ -1875,9 +2125,13 @@ void Simulator::process_contacts(const std::vector<Contact>& contacts,
   };
   const auto burst = [&](Participant& target, Participant& source) {
     if (target.body == nullptr || target.contact_class() != 4 ||
-        !target.body->grouped || target.body->successful_clear_pending ||
-        (source.contact_class() != 2 &&
-         (source.body == nullptr || source.body->rot_timer == 0))) {
+        !target.body->grouped || target.body->successful_clear_pending) {
+      return;
+    }
+    const bool bubble_trigger = config_.metsu_mode && source.body != nullptr &&
+                                source.body->bubble;
+    if (source.contact_class() != 2 && !bubble_trigger &&
+        (source.body == nullptr || source.body->rot_timer == 0)) {
       return;
     }
     GroupState* group = find_group(target.body->chain_id);
@@ -1910,6 +2164,12 @@ void Simulator::process_contacts(const std::vector<Contact>& contacts,
          (source.body == nullptr || source.body->rot_timer == 0))) {
       return;
     }
+    // Metsu bubbles only latch the rot timer once physics-owned for five
+    // updates; the timer itself never progresses for bubbles.
+    if (config_.metsu_mode && target.body->bubble &&
+        target.body->physics_update_count < 5) {
+      return;
+    }
     target.body->rot_timer = 1;
   };
   const auto direct = [&](Participant& block, Participant& projectile) {
@@ -1928,7 +2188,10 @@ void Simulator::process_contacts(const std::vector<Contact>& contacts,
         mark_deleted(*projectile.body, false);
       }
     }
-    if (!block.rotten()) {
+    // Metsu bubbles do not consume the projectile; it keeps pushing them.
+    const bool consumes = config_.metsu_mode ? !block.rotten() && !block.body->bubble
+                                             : !block.rotten();
+    if (consumes) {
       mark_deleted(*projectile.body, false);
     }
   };
@@ -1995,12 +2258,17 @@ void Simulator::process_actor_updates(
 
   const auto parameter_level = std::min<std::uint32_t>(level_, 99U);
   const auto parameters = normal_level_parameters(parameter_level);
+  const auto metsu_parameters = config_.metsu_mode
+                                    ? metsu_level_parameters(parameter_level)
+                                    : MetsuLevelParameters{};
   const auto rot_delay = config_.rot_delay_ticks == 120
                              ? std::uint64_t{120}
                              : config_.rot_delay_ticks;
-  const auto rot_penalty = config_.rotten_penalty == 1'800
-                               ? parameters.rot_penalty
-                               : config_.rotten_penalty;
+  const auto rot_penalty = config_.metsu_mode
+                               ? metsu_parameters.rot_penalty
+                               : (config_.rotten_penalty == 1'800
+                                      ? parameters.rot_penalty
+                                      : config_.rotten_penalty);
 
   for (Body* actor : actors) {
     Body& body = *actor;
@@ -2066,12 +2334,17 @@ void Simulator::process_actor_updates(
         }
         std::int64_t points;
         try {
-          points = normal_score_delta(parameter_level, group->num,
-                                      group->chain, body.size_slot);
+          points = config_.metsu_mode
+                       ? metsu_score_delta(parameter_level, group->num,
+                                           group->chain, body.size_slot)
+                       : normal_score_delta(parameter_level, group->num,
+                                            group->chain, body.size_slot);
         } catch (const std::overflow_error&) {
           points = std::numeric_limits<std::int64_t>::max();
         }
-        add_score(points, "normal burst block", events);
+        add_score(points, config_.metsu_mode ? "metsu burst block"
+                                             : "normal burst block",
+                  events);
         mark_deleted(body, true);
         highest_chain_ = std::max(highest_chain_, group->chain);
         events.push_back({tick_, EventKind::Cleared, body.id, 0, group->num,
@@ -2117,6 +2390,22 @@ void Simulator::process_actor_updates(
     }
 
     if (body.physics_owned) ++body.physics_update_count;
+
+    // Metsu bubble pop countdown: at zero the bubble pops (sound and effect
+    // in the executable) and latches d4, which makes it burst-eligible.
+    if (body.bubble && body.pop_countdown > 0) {
+      --body.pop_countdown;
+      if (body.pop_countdown == 0) {
+        body.grouped = true;
+        refresh_lifecycle(body);
+        const GroupState* group = find_group(body.chain_id);
+        events.push_back({tick_, EventKind::BubblePopped, body.id, 0,
+                          group == nullptr ? 0
+                                           : static_cast<std::int64_t>(
+                                                 group->chain),
+                          "metsu bubble popped"});
+      }
+    }
     refresh_lifecycle(body);
     if (live(body)) {
       numeric_guard_required_ =
@@ -2130,9 +2419,13 @@ void Simulator::process_scene_gauge(std::vector<Event>& events) {
   gauge_ = std::clamp<std::int64_t>(gauge_, 0, config_.gauge_max);
   ++scene_frame_;
   const auto parameter_level = std::min<std::uint32_t>(level_, 99U);
+  const auto drain_unit = config_.metsu_mode
+                              ? metsu_level_parameters(parameter_level)
+                                    .passive_drain_unit
+                              : normal_level_parameters(parameter_level)
+                                    .passive_drain_unit;
   const auto unit = checked_nonnegative_product(
-      normal_level_parameters(parameter_level).passive_drain_unit,
-      config_.passive_gauge_decay_per_tick,
+      drain_unit, config_.passive_gauge_decay_per_tick,
       "passive gauge unit overflow");
   const auto drain = gauge_ > config_.gauge_max / 2
                          ? checked_nonnegative_product(
@@ -2199,7 +2492,9 @@ void Simulator::update_level(bool left_edge, bool right_edge, double cursor_x,
   if (right_edge) fire(ShotStrength::Strong, cursor_x, cursor_y, events);
   maybe_spawn(previous_parameter_level, events);
 
-  level_shape_cutoff_ = rng_.get_rand(config_.shape_random_max);
+  if (!config_.metsu_mode) {
+    level_shape_cutoff_ = rng_.get_rand(config_.shape_random_max);
+  }
 }
 
 void Simulator::refresh_lifecycle(Body& body) {
@@ -2783,6 +3078,25 @@ std::uint64_t Simulator::calculate_config_hash() const {
   for (const auto value : config_.size_score_values) add(value);
   add(config_.chain_score_exponent);
   add(config_.max_episode_ticks);
+  // Metsu profile fields: they distinguish the nonzero-mode config hash from
+  // the mode-0 profile even where the shared fields coincide.
+  add(static_cast<std::uint8_t>(config_.metsu_mode));
+  for (const auto value : config_.metsu_piece_sizes) add(value);
+  for (const auto value : config_.metsu_piece_size_weights) add(value);
+  for (const auto value : config_.bubble_sizes) add(value);
+  for (const auto value : config_.bubble_size_weights) add(value);
+  add(config_.bubble_density);
+  add(config_.bubble_friction);
+  add(config_.bubble_restitution);
+  add(config_.bubble_rise_speed);
+  add(config_.bubble_spawn_y);
+  add(config_.bubble_x_adjust);
+  add(config_.life_max);
+  add(config_.life_initial);
+  add(config_.life_gain_unit);
+  add(config_.bubble_pop_delay);
+  add(config_.bubble_chain_window);
+  add(config_.bubble_spawn_interval_ticks);
   return fnv1a(bytes);
 }
 

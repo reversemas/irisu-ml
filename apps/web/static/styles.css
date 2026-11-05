@@ -211,3 +211,17 @@ kbd { margin-left: 4px; color: #858c8c; font-size: 7px; }
 .touch-controls button[aria-pressed="true"] { border-color: var(--rose); color: var(--paper); background: #2a1a20; }
 .touch-controls .touch-ff { flex: 0 0 34%; touch-action: none; }
 @media (pointer: coarse) { .touch-controls { display: flex; } }
+
+/* Normal <-> Metsu mode switch */
+#modeSwitchButton[aria-pressed="true"] {
+  color: #9fb6ff;
+  border-color: #3f5fd0;
+  box-shadow: 0 0 0 1px #3f5fd066 inset;
+}
+:root[data-game-mode="metsu"] .brand::after {
+  content: " · metsu";
+  color: #7f96e8;
+  font-size: .55em;
+  letter-spacing: .18em;
+  vertical-align: .35em;
+}

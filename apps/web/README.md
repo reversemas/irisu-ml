@@ -11,7 +11,11 @@ Its open-bottom U-shaped well follows the measured v2.03 mode-0 geometry.
 - In replay mode, Left/Right: jump backward/forward five seconds without changing play state
 - Replay speed: 1x, 2x, 4x, or 8x
 - `R`: restart with a new random seed
-- **play replay**: open an original v2.03 normal-mode `.rpy` file
+- **metsu mode** (header button): switch between normal and Metsu; the button
+  starts a fresh run in the other mode. Metsu adds rising bubbles, chain pops,
+  the vertical life gauge, and faster difficulty scaling; see `docs/metsu.md`.
+- **play replay**: open an original v2.03 `.rpy` file (normal or Metsu; the
+  app switches modes automatically to match the file)
 - **save replay**: download the completed run from the game-over dialog
 
 Touch taps fire weak shots; desktop players can right-click or press `S` for a

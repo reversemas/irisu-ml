@@ -78,6 +78,8 @@ typedef enum irisu_event_kind {
   IRISU_EVENT_KIND_PROJECTILE_CONTACT = 16,
   IRISU_EVENT_KIND_HELD_INPUT_IGNORED = 17,
   IRISU_EVENT_KIND_LEVEL_COMPLETED = 18,
+  IRISU_EVENT_KIND_BUBBLE_ACTIVATED = 19,
+  IRISU_EVENT_KIND_BUBBLE_POPPED = 20,
 } irisu_event_kind;
 
 // Additive typed ABI for high-throughput padded observations.
@@ -170,6 +172,9 @@ typedef struct irisu_padded_event_v1 {
 
 IRISU_API uint32_t irisu_abi_version(void);
 IRISU_API irisu_simulator* irisu_create(void);
+/* mode 0 builds the normal profile, mode 1 the Metsu (nonzero-mode)
+ * profile. Any other mode returns null. */
+IRISU_API irisu_simulator* irisu_create_mode(int mode);
 IRISU_API void irisu_destroy(irisu_simulator* simulator);
 IRISU_API int irisu_configure(irisu_simulator* simulator,
                               const irisu_config_override* overrides,
@@ -179,6 +184,9 @@ IRISU_API int irisu_reset(irisu_simulator* simulator, uint64_t seed);
 /* action_kind must be an irisu_action_kind value. */
 IRISU_API int irisu_step(irisu_simulator* simulator, int action_kind, double x, double y,
                          uint32_t wait_ticks);
+/* Extended step with the replay startup edge-suppression flag. */
+IRISU_API int irisu_step_ex(irisu_simulator* simulator, int action_kind, double x, double y,
+                            uint32_t wait_ticks, int suppress_fresh_edges);
 IRISU_API uint32_t irisu_padded_abi_version(void);
 IRISU_API size_t irisu_padded_body_capacity(void);
 IRISU_API size_t irisu_padded_observation_size(void);

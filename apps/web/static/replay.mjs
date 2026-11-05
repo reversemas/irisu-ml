@@ -85,8 +85,8 @@ export function parseReplay(value, {maxFrames = MAX_REPLAY_FRAMES} = {}) {
   }
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   const mode = view.getInt32(16, true);
-  if (mode !== 0) {
-    throw new Error(`replay mode ${mode} is unsupported; exact playback currently supports normal mode 0`);
+  if (mode !== 0 && mode !== 1) {
+    throw new Error(`replay mode ${mode} is unsupported; v2.03 uses normal mode 0 and Metsu mode 1`);
   }
   const words = new Uint32Array(frameCount);
   for (let index = 0; index < frameCount; index++) {
@@ -115,7 +115,9 @@ export function serializeReplay({seed, highestLevel, finalScore, highestChain,
   signed32(finalScore, "final score");
   signed32(highestChain, "highest chain");
   signed32(mode, "mode");
-  if (mode !== 0) throw new Error("only normal-mode v2.03 replays can be written");
+  if (mode !== 0 && mode !== 1) {
+    throw new Error("v2.03 replays use normal mode 0 or Metsu mode 1");
+  }
   const source = words instanceof Uint32Array ? words : Array.from(words || []);
   if (source.length > MAX_REPLAY_FRAMES) {
     throw new Error(`replay has ${source.length} frames; limit is ${MAX_REPLAY_FRAMES}`);

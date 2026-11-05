@@ -43,6 +43,8 @@ enum class EventKind : std::uint8_t {
   ProjectileContact,
   HeldInputIgnored,
   LevelCompleted,
+  BubbleActivated,
+  BubblePopped,
 };
 
 struct Action {
@@ -96,7 +98,9 @@ struct Body {
   bool top_contact_pending{};       // raw e4
   bool top_contact_enabled{};       // raw e5
   std::uint64_t physics_update_count{}; // raw f8
-  std::uint8_t rule_guard_f0{};     // raw f0; descriptive meaning unresolved
+  std::uint8_t rule_guard_f0{};     // raw f0; is_bubble flag in Metsu mode, else 0
+  bool bubble{};                    // raw [0xf0]; Metsu rising ex_block
+  std::int32_t pop_countdown{-1};   // raw [0xf4]; -1 unscheduled, >0 glow countdown
   bool delete_marked{};             // raw +0x68; consumed by a later actor update
   bool pending_delete{};
   bool sleeping{};          // snapshot-only physics state; omitted from policy observations
@@ -121,6 +125,8 @@ struct ObservedBody {
   std::uint64_t age_ticks{};
   std::int64_t remaining_lifetime{-1};
   std::uint64_t rot_timer{};
+  bool bubble{};                   // Metsu ex_block circle
+  std::int32_t pop_countdown{-1};  // glow countdown while >0
 };
 
 // The executable's group counters and the proven normal dispatcher predicates

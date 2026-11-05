@@ -254,6 +254,7 @@ add_library(irisu_core STATIC
   clone/core/config.cpp
   clone/core/config_io.cpp
   clone/core/dx_random.cpp
+  clone/core/metsu_rules.cpp
   clone/core/normal_rules.cpp
   ${irisu_physics_source}
   clone/core/simulator.cpp
@@ -323,7 +324,7 @@ if(IRISU_BUILD_WEB)
     -sEXPORT_NAME=createIrisuModule
     -sFILESYSTEM=0
     -sMODULARIZE=1
-    "-sEXPORTED_FUNCTIONS=['_irisu_web_create','_irisu_web_destroy','_irisu_web_reset','_irisu_web_step']"
+    "-sEXPORTED_FUNCTIONS=['_irisu_web_create','_irisu_web_create_mode','_irisu_web_destroy','_irisu_web_reset','_irisu_web_step','_irisu_web_step_ex']"
     "-sEXPORTED_RUNTIME_METHODS=['cwrap']"
   )
   set_target_properties(irisu-web-module PROPERTIES
@@ -620,6 +621,11 @@ if(IRISU_BUILD_TESTS)
   target_link_libraries(irisu-normal-rules-tests PRIVATE irisu_core)
   add_test(NAME irisu-normal-rules-tests COMMAND irisu-normal-rules-tests)
   list(APPEND irisu_native_test_targets irisu-normal-rules-tests)
+
+  add_executable(irisu-metsu-rules-tests tests/native/test_metsu_rules.cpp)
+  target_link_libraries(irisu-metsu-rules-tests PRIVATE irisu_core)
+  add_test(NAME irisu-metsu-rules-tests COMMAND irisu-metsu-rules-tests)
+  list(APPEND irisu_native_test_targets irisu-metsu-rules-tests)
 
   add_executable(irisu-config-tests tests/native/test_config.cpp)
   target_link_libraries(irisu-config-tests PRIVATE irisu_core)

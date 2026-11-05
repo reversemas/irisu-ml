@@ -1,11 +1,13 @@
 export const palette = [
   "#861f00", "#0005a4", "#9a9000", "#b227b5",
   "#52aba7", "#5b729c", "#1b747a", "#92335f",
+  "#2d7024", "#a85510",
 ];
 
 export const activatedPalette = [
   "#e44717", "#2945ff", "#eee116", "#b227b5",
   "#52aba7", "#5b729c", "#35bdc4", "#e35b98",
+  "#52c94a", "#ff8a2a",
 ];
 
 export const bonusPalette = [

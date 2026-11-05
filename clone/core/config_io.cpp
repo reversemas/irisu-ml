@@ -120,6 +120,19 @@ void apply_config_override(MechanicsConfig& config, std::string_view key,
   IRISU_UINT(spawn_acceleration_level_stride)
   IRISU_REAL(chain_score_exponent)
   IRISU_UINT(max_episode_ticks)
+  IRISU_UINT(metsu_mode)
+  IRISU_REAL(bubble_density)
+  IRISU_REAL(bubble_friction)
+  IRISU_REAL(bubble_restitution)
+  IRISU_REAL(bubble_rise_speed)
+  IRISU_REAL(bubble_spawn_y)
+  IRISU_REAL(bubble_x_adjust)
+  IRISU_I64(life_max)
+  IRISU_I64(life_initial)
+  IRISU_I64(life_gain_unit)
+  IRISU_UINT(bubble_pop_delay)
+  IRISU_UINT(bubble_chain_window)
+  IRISU_UINT(bubble_spawn_interval_ticks)
 #undef IRISU_I64
 #undef IRISU_UINT
 #undef IRISU_REAL
@@ -131,6 +144,27 @@ void apply_config_override(MechanicsConfig& config, std::string_view key,
     }
     if (key == "piece_size_weights" + suffix) {
       config.piece_size_weights[index] =
+          integral_override<std::uint32_t>(key, value);
+      return;
+    }
+  }
+  for (std::size_t index = 0; index < config.metsu_piece_sizes.size(); ++index) {
+    const std::string suffix = "[" + std::to_string(index) + "]";
+    if (key == "metsu_piece_sizes" + suffix) {
+      config.metsu_piece_sizes[index] = real();
+      return;
+    }
+    if (key == "metsu_piece_size_weights" + suffix) {
+      config.metsu_piece_size_weights[index] =
+          integral_override<std::uint32_t>(key, value);
+      return;
+    }
+    if (key == "bubble_sizes" + suffix) {
+      config.bubble_sizes[index] = real();
+      return;
+    }
+    if (key == "bubble_size_weights" + suffix) {
+      config.bubble_size_weights[index] =
           integral_override<std::uint32_t>(key, value);
       return;
     }

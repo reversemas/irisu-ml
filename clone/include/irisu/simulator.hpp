@@ -2,6 +2,8 @@
 
 #include "irisu/config.hpp"
 #include "irisu/dx_random.hpp"
+#include "irisu/metsu_rules.hpp"
+#include "irisu/normal_rules.hpp"
 #include "irisu/physics.hpp"
 #include "irisu/types.hpp"
 
@@ -84,7 +86,8 @@ class Simulator {
                  double cursor_y, bool suppress_fresh_edges,
                  std::vector<Event>& events);
   void fire(ShotStrength strength, double x, double y, std::vector<Event>& events);
-  BodyId spawn_random_piece(double y, std::uint32_t parameter_level);
+  BodyId spawn_random_piece(double y, std::uint32_t parameter_level,
+                            bool bubble = false);
   void maybe_spawn(std::uint32_t parameter_level,
                    std::vector<Event>& events);
   void process_contacts(const std::vector<Contact>& contacts, bool left_edge,
@@ -105,6 +108,8 @@ class Simulator {
   std::uint32_t color_count_for_level(std::uint32_t parameter_level) const;
   std::uint32_t current_spawn_interval() const;
   std::uint32_t spawn_interval_for_level(
+      std::uint32_t parameter_level) const;
+  std::uint32_t bubble_spawn_interval_for_level(
       std::uint32_t parameter_level) const;
   Body* find_body(BodyId id);
   GroupState* find_group(ChainId id);

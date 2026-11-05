@@ -103,7 +103,37 @@ struct MechanicsConfig {
   std::array<std::int64_t, 3> size_score_values{20, 28, 40}; // compatibility-only; ignored
   double chain_score_exponent{2.0};                  // compatibility-only; ignored
   std::uint64_t max_episode_ticks{1'000'000};
+
+  // ---- Metsu (nonzero-mode) profile, binary-derived from the table at
+  // 0x413648 and the metsu branches of the shared ScenePlay/Field/Block code.
+  // All fields are ignored by the faithful normal rules.
+  bool metsu_mode{false};                            // replay header mode byte
+  std::array<double, 10> metsu_piece_sizes{
+      30.0, 48.0, 64.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0};
+  std::array<std::uint32_t, 10> metsu_piece_size_weights{
+      10, 40, 20, 0, 0, 0, 0, 0, 0, 0};
+  std::array<double, 10> bubble_sizes{
+      42.0, 58.0, 74.0, 90.0, 104.0, 120.0, 10.0, 10.0, 10.0, 10.0};
+  std::array<std::uint32_t, 10> bubble_size_weights{
+      20, 40, 50, 50, 25, 15, 0, 0, 0, 0};
+  double bubble_density{25.0};                       // ex_block_density
+  double bubble_friction{1.0};                       // ex_block_friction
+  double bubble_restitution{0.0};                    // ex_block_restitution
+  double bubble_rise_speed{-0.05};                   // ex_block_speed per update
+  double bubble_spawn_y{500.0};                      // ex_block_y1 (+GetRand(ex_block_y2=0))
+  double bubble_x_adjust{50.0};                      // ex_block_x_adj
+  std::int64_t life_max{10'000};                     // game_life_max
+  std::int64_t life_initial{1'000};                  // game_life_init
+  std::int64_t life_gain_unit{120};                  // game_life_plus_unit / reward
+  std::uint32_t bubble_pop_delay{120};               // raw [0xf4] countdown 0x78
+  std::uint32_t bubble_chain_window{112};            // chain spread while 0 < f4 <= 0x70
+  std::uint32_t bubble_spawn_interval_ticks{175};    // exact exI level-1 value
 };
+
+// The complete Metsu-side MechanicsConfig: field geometry, spawn tables, life
+// gauge, and the normal fields that the shared engine reads differently in
+// nonzero mode (projectile lifetime 1200, norma 6, no rotten prefill).
+[[nodiscard]] MechanicsConfig metsu_default_config();
 
 // Validates every runtime field, including values that narrow to the legacy
 // engine's float/int types, and returns the config for constructor chaining.

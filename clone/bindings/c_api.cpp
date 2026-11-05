@@ -14,6 +14,7 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #if !defined(IRISU_SINGLE_THREADED_C_API)
@@ -53,6 +54,8 @@
 
 struct irisu_simulator {
   irisu_simulator() : value{} {}
+  explicit irisu_simulator(irisu::MechanicsConfig config)
+      : value{std::move(config)} {}
 
   irisu::Simulator value;
   irisu::StepResult last_step;
@@ -115,6 +118,8 @@ const char* event_name(irisu::EventKind value) {
     case irisu::EventKind::ProjectileContact: return "projectile_contact";
     case irisu::EventKind::HeldInputIgnored: return "held_input_ignored";
     case irisu::EventKind::LevelCompleted: return "level_completed";
+    case irisu::EventKind::BubbleActivated: return "bubble_activated";
+    case irisu::EventKind::BubblePopped: return "bubble_popped";
   }
   return "unknown";
 }
@@ -346,7 +351,9 @@ std::string observation_json(const irisu::Simulator& simulator) {
            << ",\"size\":" << body.size << ",\"chain_id\":" << body.chain_id
            << ",\"projectile_hits\":" << body.projectile_hits << ",\"age_ticks\":"
            << body.age_ticks << ",\"remaining_lifetime\":"
-           << body.remaining_lifetime << ",\"rot_timer\":" << body.rot_timer << '}';
+           << body.remaining_lifetime << ",\"rot_timer\":" << body.rot_timer
+           << ",\"bubble\":" << (body.bubble ? "true" : "false")
+           << ",\"pop_countdown\":" << body.pop_countdown << '}';
   }
   output << "]}";
   return output.str();
@@ -586,6 +593,17 @@ irisu_simulator* irisu_create(void) {
   try { return new irisu_simulator{}; } catch (...) { return nullptr; }
 }
 
+irisu_simulator* irisu_create_mode(int mode) {
+  const irisu::ScopedFloatingPointEnvironment floating_point_environment;
+  try {
+    if (mode == 0) return new irisu_simulator{};
+    if (mode == 1) {
+      return new irisu_simulator{irisu::metsu_default_config()};
+    }
+    return nullptr;
+  } catch (...) { return nullptr; }
+}
+
 void irisu_destroy(irisu_simulator* simulator) {
   const irisu::ScopedFloatingPointEnvironment floating_point_environment;
   delete simulator;
@@ -621,6 +639,16 @@ int irisu_step(irisu_simulator* simulator, int action_kind, double x, double y,
     if (action_kind < 0 || action_kind > 3) throw std::invalid_argument("unknown action kind");
     simulator->last_step = simulator->value.step(
         {static_cast<irisu::ActionKind>(action_kind), x, y, wait_ticks});
+  });
+}
+
+int irisu_step_ex(irisu_simulator* simulator, int action_kind, double x, double y,
+                  uint32_t wait_ticks, int suppress_fresh_edges) {
+  return protect(simulator, [&] {
+    if (action_kind < 0 || action_kind > 3) throw std::invalid_argument("unknown action kind");
+    simulator->last_step = simulator->value.step(
+        {static_cast<irisu::ActionKind>(action_kind), x, y, wait_ticks,
+         suppress_fresh_edges != 0});
   });
 }
 
@@ -769,7 +797,7 @@ const char* irisu_build_info_json(void) {
       output << "{\"abi_version\":1,\"clone_version\":\"0.1.0\","
                 "\"target\":\"IriSu Syndrome v2.03 normal\","
                 "\"physics\":\"Box2D 1.4.3 SourceForge SVN r58\","
-                "\"snapshot_schema\":7,\"padded_abi_version\":1,"
+                "\"snapshot_schema\":8,\"padded_abi_version\":1,"
                 "\"cxx_compiler_id\":";
       quoted(output, IRISU_CXX_COMPILER_ID);
       output << ",\"cxx_compiler_version\":";

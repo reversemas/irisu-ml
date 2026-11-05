@@ -349,6 +349,101 @@ MechanicsConfig validated_mechanics_config(MechanicsConfig config) {
     if (score < 0) invalid("size_score_values");
   }
 
+  // ---- Metsu profile validation (ignored by the normal rules).
+  if (config.metsu_mode) {
+    std::uint64_t metsu_weight_total = 0;
+    for (const auto weight : config.metsu_piece_size_weights) {
+      metsu_weight_total += weight;
+    }
+    if (metsu_weight_total == 0 ||
+        metsu_weight_total > static_cast<std::uint64_t>(
+                                 std::numeric_limits<std::int32_t>::max()) + 1U) {
+      invalid("metsu_piece_size_weights total");
+    }
+    for (const double size : config.metsu_piece_sizes) {
+      positive_world_dimension(size, magnification, "metsu_piece_sizes");
+      safe_box_math(size, config.piece_density, magnification,
+                    "metsu piece mass and inertia");
+    }
+    std::uint64_t bubble_weight_total = 0;
+    for (const auto weight : config.bubble_size_weights) {
+      bubble_weight_total += weight;
+    }
+    if (bubble_weight_total == 0 ||
+        bubble_weight_total > static_cast<std::uint64_t>(
+                                  std::numeric_limits<std::int32_t>::max()) + 1U) {
+      invalid("bubble_size_weights total");
+    }
+    for (const double size : config.bubble_sizes) {
+      positive_world_dimension(size, magnification, "bubble_sizes");
+    }
+    material(config.bubble_density, config.bubble_friction,
+             config.bubble_restitution, "bubble material");
+    for (const double size : config.bubble_sizes) {
+      safe_box_math(size, config.bubble_density, magnification,
+                    "bubble mass and inertia");
+    }
+    finite(config.bubble_rise_speed, "bubble_rise_speed");
+    (void)world_value(config.bubble_spawn_y, magnification, "bubble_spawn_y");
+    (void)finite_add(legacy_float(config.bubble_spawn_y, "bubble_spawn_y"),
+                     legacy_float(config.bubble_rise_speed,
+                                  "bubble_rise_speed"),
+                     "bubble rise update");
+    nonnegative(config.bubble_x_adjust, "bubble_x_adjust");
+    const double bubble_x_span = std::trunc(
+        config.field_width - config.field_thickness -
+        2.0 * config.bubble_x_adjust);
+    if (!std::isfinite(bubble_x_span) || bubble_x_span < 0.0) {
+      invalid("bubble spawn X range");
+    }
+    const double metsu_x_span = std::trunc(config.field_width - 40.0);
+    if (!std::isfinite(metsu_x_span) || metsu_x_span < 0.0) {
+      invalid("metsu spawn X range");
+    }
+    if (config.life_max <= 0 || config.life_initial <= 0 ||
+        config.life_initial > config.life_max || config.life_gain_unit < 0 ||
+        config.bubble_pop_delay == 0 || config.bubble_chain_window == 0 ||
+        config.bubble_spawn_interval_ticks == 0) {
+      invalid("metsu life or bubble timing");
+    }
+  }
+
+  return config;
+}
+
+MechanicsConfig metsu_default_config() {
+  MechanicsConfig config;
+  config.metsu_mode = true;
+  // Field geometry from the Metsu-side table at 0x413648 (== irisu.ini).
+  config.field_x = 94.0;
+  config.field_y = 20.0;
+  config.field_width = 420.0;
+  config.field_height = 370.0;
+  config.field_blank = 30.0;
+  config.field_thickness = 16.0;
+  config.field_top = -140.0;
+  config.field_top_width = 450.0;
+  config.field_top_height = 300.0;
+  config.field_bottom_height = 400.0;
+  config.side_wall_top = 20.0;
+  config.side_wall_bottom = 390.0;
+  // Life gauge.
+  config.gauge_max = 10'000;
+  config.gauge_initial = 1'000;
+  config.gauge_clear_unit = 120;  // game_life_plus_unit
+  config.rotten_penalty = 600;    // level-1 P; the live value is level-scaled
+  // Difficulty cadence.
+  config.qualifying_clears_per_level = 6;
+  config.spawn_interval_ticks = 120;  // nominal metsu base I = 120 - 10*(L%8)
+  config.starting_colors = 6;         // C = 5 + L/25 (inclusive IDs 0..C)
+  config.maximum_colors = 10;
+  // Actors.
+  config.rot_delay_ticks = 120;       // block_death_delay
+  config.projectile_life_ticks = 1'200;
+  config.initial_rotten_count = 0;    // metsu skips the rotten prefill
+  config.initial_falling_count = 10;
+  config.initial_falling_y = 60.0;
+  config.spawn_y = -50.0;
   return config;
 }
 

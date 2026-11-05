@@ -1,10 +1,11 @@
 import {BrowserGame} from "./exact-runtime.js?v=20261006e";
+import {MetsuGame} from "./metsu-runtime.mjs?v=20261105a";
 import {
   activatedTrailAlphas, colorFor, hasActivatedTrail,
-} from "./colors.mjs?v=20260824c";
+} from "./colors.mjs?v=20261105a";
 import {
   clampReplayScrubFrame, parseReplay, REPLAY_TICK_MS,
-} from "./replay.mjs?v=20261006e";
+} from "./replay.mjs?v=20261105a";
 import {RestartGate} from "./restart-gate.mjs?v=20261006e";
 import {createSoundtrack} from "./music.mjs?v=20261006e";
 import {offlineStatus} from "./offline.mjs?v=20261103a";
@@ -29,6 +30,7 @@ const ui = {
   shotButtons: document.querySelectorAll("[data-shot]"),
   fastForward: $("#fastForwardButton"),
   mute: $("#muteButton"),
+  modeSwitch: $("#modeSwitchButton"),
   appError: $("#appError"),
   toast: $("#toast"),
 };
@@ -43,6 +45,8 @@ let toastTimer;
 let fastForwardTimer;
 let touchShot = "weak";
 let game = null;
+let gameMode = "normal";
+let switchingMode = false;
 let trailTick = -1;
 let replayLoadEpoch = 0;
 let lastReplayAnnouncement = "";
@@ -188,6 +192,58 @@ function setRunning(running) {
   syncUi();
 }
 
+function syncModeUi() {
+  once("gameMode", gameMode, (v) => { document.documentElement.dataset.gameMode = v; });
+  once("modeSwitchLabel", gameMode === "normal" ? "metsu mode" : "normal mode", (v) => {
+    ui.modeSwitch.firstChild.textContent = v;
+  });
+  ui.modeSwitch.setAttribute("aria-pressed", String(gameMode === "metsu"));
+}
+
+async function createGame(mode) {
+  if (mode === "metsu") return MetsuGame.create(receiveSnapshot);
+  return BrowserGame.create(receiveSnapshot);
+}
+
+async function switchMode(mode) {
+  if (switchingMode || mode === gameMode) return;
+  switchingMode = true;
+  const previousMode = gameMode;
+  stopFastForward();
+  ui.modeSwitch.disabled = true;
+  ui.openReplay.disabled = true;
+  if (ui.runtimeLoading) ui.runtimeLoading.hidden = false;
+  try {
+    const previous = game;
+    game = null;
+    try { previous.close?.(); } catch (_) { /* swap races are fine */ }
+    gameMode = mode;
+    game = await createGame(mode);
+    game.setAim(aim.x, aim.y);
+    started = true;
+    lastEvent = -1;
+    once("backend", mode === "metsu" ? "portable-wasm" : "exact-v86", (v) => {
+      document.documentElement.dataset.backend = v;
+    });
+    syncModeUi();
+    showToast(mode === "metsu" ? "METSU mode" : "NORMAL mode");
+  } catch (error) {
+    gameMode = previousMode;
+    try { game = await createGame(previousMode); }
+    catch (fatal) { receiveSnapshot(null, fatal); }
+    receiveSnapshot(null, error);
+  } finally {
+    switchingMode = false;
+    ui.modeSwitch.disabled = false;
+    ui.openReplay.disabled = !game;
+    if (ui.runtimeLoading) ui.runtimeLoading.hidden = true;
+  }
+}
+
+ui.modeSwitch.addEventListener("click", () => {
+  void switchMode(gameMode === "normal" ? "metsu" : "normal");
+});
+
 async function restart() {
   if (!game) return false;
   return restartGate.run(async () => {
@@ -213,7 +269,7 @@ function replayFilename(state) {
   const stamp = `${now.getFullYear()}${part(now.getMonth() + 1)}${part(now.getDate())}_` +
     `${part(now.getHours())}${part(now.getMinutes())}${part(now.getSeconds())}`;
   const score = Math.max(0, state.score).toString().padStart(8, "0").slice(-8);
-  return `irisu_${score}_${stamp}_0.rpy`;
+  return `${gameMode === "metsu" ? "metsu" : "irisu"}_${score}_${stamp}_0.rpy`;
 }
 
 function saveReplay() {
@@ -246,6 +302,9 @@ async function openReplayFile(file) {
   announceReplay("loading", "Loading exact replay");
   try {
     const replay = parseReplay(await file.arrayBuffer());
+    if (epoch !== replayLoadEpoch) return;
+    const replayModeName = replay.mode === 1 ? "metsu" : "normal";
+    if (replayModeName !== gameMode) await switchMode(replayModeName);
     if (epoch !== replayLoadEpoch) return;
     const loaded = await game.loadReplay(replay, file.name || "replay.rpy");
     if (!loaded || epoch !== replayLoadEpoch) return;
@@ -300,6 +359,27 @@ function drawBody(body, now) {
   }
   fillBody(body, size, color, body,
     body.lifecycle === "scripted_falling" ? .62 : 1);
+  if (body.bubble) {
+    // Rising/popped metsu bubbles get a rim so they read as bubbles, and a
+    // pulsing glow ring while the pop countdown runs.
+    ctx.save();
+    ctx.translate(body.x, body.y);
+    ctx.globalAlpha = .8;
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "#e8fbffcc";
+    bodyPath(body, size);
+    ctx.stroke();
+    if (body.pop_countdown > 0) {
+      const pulse = .5 + .5 * Math.sin(now / 90);
+      ctx.globalAlpha = .35 + .55 * pulse;
+      ctx.lineWidth = 3 + 3 * pulse;
+      ctx.strokeStyle = "#ffffff";
+      ctx.beginPath();
+      ctx.arc(0, 0, size / 2 + 4 + 2 * pulse, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
   // v2.03 renders rotten pieces with their normal color and shape. The small
   // gray squares in reference footage are projectiles, not dead blocks.
 }
@@ -336,6 +416,36 @@ function makeStrip() {
 const levelStrip = makeStrip();
 const scoreStrip = makeStrip();
 let gaugeGradient = null;
+let lifeGradient = null;
+
+function drawLifeGauge(state) {
+  // Metsu side: the INI draws a vertical game_life gauge at x=34,y=100 with a
+  // white track and a bright blue fill (0x3f3fd9), plus a numeric readout.
+  const x = 34, y = 100, w = 20, h = 350;
+  ctx.fillStyle = "#ffffff2e";
+  ctx.fillRect(x, y, w, h);
+  const ratio = Math.max(0, Math.min(1, state.gauge / state.gauge_max));
+  if (!lifeGradient) {
+    lifeGradient = ctx.createLinearGradient(0, y + h, 0, y);
+    lifeGradient.addColorStop(0, "#2a2a96");
+    lifeGradient.addColorStop(1, "#6a6aff");
+  }
+  ctx.fillStyle = lifeGradient;
+  ctx.fillRect(x, y + h * (1 - ratio), w, h * ratio);
+  ctx.fillStyle = "#ffffff26";
+  ctx.fillRect(x, y, 3, h);
+  ctx.save();
+  ctx.textAlign = "center";
+  ctx.font = "900 15px Georgia, serif";
+  ctx.strokeStyle = "#1b2440";
+  ctx.lineWidth = 4;
+  ctx.lineJoin = "round";
+  const text = String(Math.max(0, state.gauge));
+  ctx.strokeText(text, x + w / 2, y - 10);
+  ctx.fillStyle = "#cfd8ff";
+  ctx.fillText(text, x + w / 2, y - 10);
+  ctx.restore();
+}
 
 function cachedStrip(strip, key, render) {
   if (strip.key !== key) {
@@ -352,19 +462,23 @@ function drawHud(state) {
     outlinedText(String(state.level), 52, 458, 25, "center", c);
   });
 
-  const trackX = 151, trackY = 437, trackW = 312, trackH = 15;
-  ctx.fillStyle = "#33161eaa";
-  ctx.fillRect(trackX, trackY, trackW, trackH);
-  const ratio = Math.max(0, Math.min(1, state.gauge / state.gauge_max));
-  if (!gaugeGradient) {
-    gaugeGradient = ctx.createLinearGradient(trackX, 0, trackX + trackW, 0);
-    gaugeGradient.addColorStop(0, "#7c1b31");
-    gaugeGradient.addColorStop(1, "#b02a3f");
+  if (gameMode === "metsu") {
+    drawLifeGauge(state);
+  } else {
+    const trackX = 151, trackY = 437, trackW = 312, trackH = 15;
+    ctx.fillStyle = "#33161eaa";
+    ctx.fillRect(trackX, trackY, trackW, trackH);
+    const ratio = Math.max(0, Math.min(1, state.gauge / state.gauge_max));
+    if (!gaugeGradient) {
+      gaugeGradient = ctx.createLinearGradient(trackX, 0, trackX + trackW, 0);
+      gaugeGradient.addColorStop(0, "#7c1b31");
+      gaugeGradient.addColorStop(1, "#b02a3f");
+    }
+    ctx.fillStyle = gaugeGradient;
+    ctx.fillRect(trackX, trackY, trackW * ratio, trackH);
+    ctx.fillStyle = "#ffffff18";
+    ctx.fillRect(trackX, trackY, trackW, 3);
   }
-  ctx.fillStyle = gaugeGradient;
-  ctx.fillRect(trackX, trackY, trackW * ratio, trackH);
-  ctx.fillStyle = "#ffffff18";
-  ctx.fillRect(trackX, trackY, trackW, 3);
 
   const digits = String(state.score).padStart(8, "0");
   cachedStrip(scoreStrip, digits, (c) => {
@@ -406,10 +520,11 @@ function drawScorePopups(now) {
 function drawWalls(state) {
   const f = state.field;
   const thick = 16;
+  const blank = gameMode === "metsu" ? 30 : 40;
   ctx.fillStyle = "#f3f3ef";
   ctx.fillRect(f.x, f.y, thick, f.height);
   ctx.fillRect(f.x + f.width + thick / 2, f.y, thick, f.height);
-  ctx.fillRect(f.x, f.y + f.height + 40, f.width + thick * 2, thick);
+  ctx.fillRect(f.x - thick / 2, f.y + f.height + blank, f.width + thick * 2, thick);
   ctx.fillRect(f.x + thick, 0, f.width, 10);
   ctx.fillStyle = "#cad0cd55";
   ctx.fillRect(f.x, f.y, 3, f.height);
@@ -752,6 +867,7 @@ if (window.matchMedia?.("(pointer: coarse)").matches) {
 }
 
 draw();
+syncModeUi();
 BrowserGame.create(receiveSnapshot).then((instance) => {
   game = instance;
   game.setAim(aim.x, aim.y);
